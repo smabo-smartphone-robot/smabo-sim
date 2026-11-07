@@ -13,6 +13,7 @@ Implementations:
 
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -52,6 +53,30 @@ class Engine(ABC):
     def close(self) -> None:
         """Release resources (renderers) before the engine is replaced."""
 
+    # vision targets (World.targets). Only engines with a camera show them;
+    # the others just keep their settings.
+    def targets(self) -> list[dict]:
+        return [{"name": t["name"], "kind": t["kind"], "x": t["x"], "y": t["y"], "z": t["z"],
+                 "yaw_deg": math.degrees(t["yaw"]), "size": t["size"], "sway": dict(t["sway"])}
+                for t in self.world.targets]
+
+    def set_target(self, name: str, **change) -> None:
+        apply_target_change(self.world.target(name), change)
+
     @abstractmethod
     def scan(self, angles: np.ndarray, range_min: float, range_max: float) -> np.ndarray:
         """Lidar ranges for ``angles`` (rad, laser frame); 0.0 = no return."""
+
+
+def apply_target_change(t: dict, change: dict) -> None:
+    """Apply ``set_target`` keywords to one World target dict: x, y, z (m),
+    yaw_deg, sway_on, sway_amplitude (m), sway_period (s)."""
+    for k in ("x", "y", "z"):
+        if change.get(k) is not None:
+            t[k] = float(change[k])
+    if change.get("yaw_deg") is not None:
+        t["yaw"] = math.radians(float(change["yaw_deg"]))
+    for k in ("on", "amplitude", "period"):
+        v = change.get(f"sway_{k}")
+        if v is not None:
+            t["sway"][k] = bool(v) if k == "on" else max(float(v), 0.5 if k == "period" else 0.0)

@@ -87,6 +87,27 @@ smabo-web では、brain の接続先を `localhost:9090` にします。ESP32 �
 - `--viewer` を開いているときは切り替えられません（`--model` で起動し直すか、ブラウザの `/view` を使ってください）。
 - 一覧は `GET /view/models` で取れます。モデルの定義は `smabo_sim/models.py` です。
 
+### 画像処理（smabo-web の Vision タブ）を試す
+
+MuJoCo のワールドには、brain の画像処理の 4 つのモード（aruco / qr / face / color）で見つかるターゲットが、スタート位置の 0.9 m 前に並んでいます。スマホの前面カメラの映像は WebRTC で brain に送られるので、実機と同じ手順で Vision タブを確認できます。
+
+| ターゲット | モード | 中身 |
+|---|---|---|
+| `face` | face | 絵の顔（OpenCV の Haar で検出される） |
+| `aruco_0` | aruco | ArUco マーカー（DICT_4X4_50、ID 0） |
+| `qr` | qr | 「smabo」と読める QR コード |
+| `red_ball` | color（red） | 赤いボール |
+
+1. sim を `--engine mujoco` で起動し、aiortc を入れておきます（`pip install -e '.[webrtc]'`）。brain 側にも aiortc と OpenCV が必要です（smabo-brain の `requirements.txt`）。
+2. smabo-web の Vision タブで「Enabled」をオンにし、Mode を選んで「Preview」を押すと、検出結果の枠が映像に重なって表示されます。
+3. 追従（視線・首振り・走行）を試すときは、`/view` の「ターゲットを揺らす」のボタンでターゲットを左右に動かします。首振りは `--model neck`、走行は `--model encmobile` などのモデルで試せます。
+
+- ターゲットは障害物ではありません（LiDAR には映らず、ロボットもすり抜けます）。
+- 位置や揺れ方は `POST /view/targets/<name> {"x": 1.2, "y": 0, "sway": {"on": true, "amplitude": 0.2, "period": 6}}` で変えられます。一覧は `GET /view/targets` です。
+- 別のワールドでは `targets:` に `image`（PNG）か `color`（色の名前か `[r, g, b]`、`shape: sphere | box`）で書きます（`smabo_sim/world.py` の説明を参照）。
+- ArUco・QR・顔の画像は `scripts/make_vision_targets.py` で作り直せます（OpenCV が必要。smabo-brain の venv で実行できます）。sim 自体は PNG を読むだけなので OpenCV は不要です。
+- ターゲットは MuJoCo だけで表示されます（`kinematic` にはカメラがありません）。
+
 ### スマホ（smabo-app の部分）
 
 smabo-sim は ESP32 だけでなく、前面ホルダーに挿したスマホ（smabo-app）も再現します。smabo-app と同じく、brain に別のクライアントとしてつながります。
@@ -133,7 +154,7 @@ smabo-sim は ESP32 だけでなく、前面ホルダーに挿したスマホ（
 | エンジン | `engines/` | 実際に起きること。車輪の動き、エンコーダ、LiDAR。差し替え可能 |
 | モデル | `models.py` | ロードマップの段階ごとの構成（どの部品があるか、ESP32 のモード、有効なサーボ）。MJCF の組み立てとエンジンがこれを見る |
 | 表示 | `view.py` | ブラウザ用の 3D 表示（`/view`）。MuJoCo の画面外描画を MJPEG で配信し、視点はドラッグで操作 |
-| ワールド | `world.py`, `worlds/*.yaml` | 壁や障害物の輪郭。LiDAR の光線計算と、Nav2 用地図の書き出しに使う |
+| ワールド | `world.py`, `worlds/*.yaml`, `worlds/targets/*.png` | 壁や障害物の輪郭（LiDAR の光線計算と、Nav2 用地図の書き出しに使う）と、画像処理のターゲット |
 
 エンジンは `kinematic`（運動学、既定）と `mujoco`（物理演算）の 2 つです。`kinematic` は次のとおりです。
 - 車輪の速度は一次遅れ（`sim.motor_time_constant`）で目標に近づきます。

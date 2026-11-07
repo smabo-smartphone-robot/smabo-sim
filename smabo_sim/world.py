@@ -15,6 +15,19 @@ Any shape may also give ``height`` (m) for 3D engines such as MuJoCo
 
 Only the outline of each shape matters: the LD06 sees a single horizontal
 plane, so the world is exactly what it can hit at its mounting height.
+
+``targets`` are things for smabo-brain's vision modes to find in the phone
+camera (MuJoCo engine): pictures on a post (ArUco markers, QR codes, a face)
+and coloured balls / boxes. They are not obstacles (the lidar and the robot
+pass through them), and they can sway sideways to test tracking::
+
+    targets:
+      - {name: face,  image: targets/face.png, x: 0.9, y: 0.4, z: 0.12, size: 0.16}
+      - {name: ball,  color: red, shape: sphere, x: 0.9, y: -0.4, z: 0.06, size: 0.08,
+         sway: {amplitude: 0.2, period: 6, on: true}}
+
+``image`` is relative to the world file; ``yaw_deg`` is where the picture
+faces (default: toward ``start``); ``color`` is a name or ``[r, g, b]``.
 The same file is exported as a Nav2 map (``export_map``) so AMCL localises the
 simulated robot against the very walls its simulated lidar sees.
 """
@@ -44,17 +57,19 @@ class World:
     segments: np.ndarray = field(default_factory=lambda: np.zeros((0, 4)))  # [x1,y1,x2,y2]
     start: Pose2D = field(default_factory=Pose2D)
     shapes: list = field(default_factory=list)   # raw shape dicts (3D engines extrude them)
+    targets: list = field(default_factory=list)  # vision targets (normalised dicts, mutable state)
 
     # ------------------------------------------------------------------ #
     # construction
     # ------------------------------------------------------------------ #
     @classmethod
     def load(cls, path: str | None = None) -> "World":
-        with open(path or BUNDLED_WORLD, encoding="utf-8") as f:
-            return cls.from_dict(yaml.safe_load(f) or {})
+        path = path or BUNDLED_WORLD
+        with open(path, encoding="utf-8") as f:
+            return cls.from_dict(yaml.safe_load(f) or {}, base_dir=os.path.dirname(os.path.abspath(path)))
 
     @classmethod
-    def from_dict(cls, d: dict) -> "World":
+    def from_dict(cls, d: dict, base_dir: str = ".") -> "World":
         segs: list[tuple[float, float, float, float]] = []
         for s in d.get("shapes") or []:
             segs.extend(_shape_segments(s))
@@ -62,8 +77,18 @@ class World:
         start = Pose2D(float(st.get("x", 0.0)), float(st.get("y", 0.0)),
                        math.radians(float(st.get("yaw_deg", 0.0))))
         arr = np.array(segs, dtype=float).reshape(-1, 4)
+        targets = [_target(t, i, start, base_dir) for i, t in enumerate(d.get("targets") or [])]
+        names = [t["name"] for t in targets]
+        if len(set(names)) != len(names):
+            raise ValueError(f"vision target names must be unique: {names}")
         return cls(name=str(d.get("name", "world")), segments=arr, start=start,
-                   shapes=[dict(s) for s in d.get("shapes") or []])
+                   shapes=[dict(s) for s in d.get("shapes") or []], targets=targets)
+
+    def target(self, name: str) -> dict:
+        for t in self.targets:
+            if t["name"] == name:
+                return t
+        raise KeyError(name)
 
     # ------------------------------------------------------------------ #
     # queries
@@ -188,3 +213,44 @@ def _point_segment_dist(pts: np.ndarray, segs: np.ndarray) -> np.ndarray:
     t = np.clip(np.where(denom > 0, (ap * ab).sum(-1) / np.where(denom > 0, denom, 1), 0), 0, 1)
     closest = a + t[..., None] * ab
     return np.linalg.norm(pts[:, None, :] - closest, axis=-1)
+
+
+# --------------------------------------------------------------------------- #
+# vision targets
+# --------------------------------------------------------------------------- #
+COLORS = {
+    "red": (220, 35, 35), "orange": (240, 130, 30), "yellow": (240, 210, 40),
+    "green": (40, 170, 60), "cyan": (30, 190, 210), "blue": (40, 80, 220),
+    "purple": (150, 60, 200), "white": (240, 240, 240), "black": (25, 25, 25),
+}
+
+
+def _target(t: dict, i: int, start: Pose2D, base_dir: str) -> dict:
+    """Normalise one ``targets`` entry (see the module docstring)."""
+    name = str(t.get("name") or f"target_{i}")
+    x, y = float(t.get("x", 1.0)), float(t.get("y", 0.0))
+    if "yaw_deg" in t:
+        yaw = math.radians(float(t["yaw_deg"]))
+    else:                                   # face the start pose
+        yaw = math.atan2(start.y - y, start.x - x)
+    out = {"name": name, "x": x, "y": y, "z": float(t.get("z", 0.12)), "yaw": yaw,
+           "size": float(t.get("size", 0.12))}
+    if t.get("image"):
+        path = str(t["image"])
+        out.update(kind="image", image=path if os.path.isabs(path) else os.path.join(base_dir, path))
+        if not os.path.exists(out["image"]):
+            raise ValueError(f"vision target {name!r}: image not found: {out['image']}")
+    else:
+        c = t.get("color", "red")
+        rgb = COLORS.get(c) if isinstance(c, str) else tuple(int(v) for v in c)
+        if rgb is None or len(rgb) != 3:
+            raise ValueError(f"vision target {name!r}: unknown color {c!r} ({', '.join(COLORS)} or [r, g, b])")
+        shape = str(t.get("shape", "sphere"))
+        if shape not in ("sphere", "box"):
+            raise ValueError(f"vision target {name!r}: shape must be sphere or box")
+        out.update(kind="color", color=rgb, shape=shape)
+    sway = t.get("sway") or {}
+    out["sway"] = {"amplitude": float(sway.get("amplitude", 0.2)),
+                   "period": max(float(sway.get("period", 6.0)), 0.5),
+                   "on": bool(sway.get("on", False))}
+    return out

@@ -211,6 +211,52 @@ def world_xml(world: World) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# vision targets (World.targets): mocap bodies the engine can move
+# --------------------------------------------------------------------------- #
+TARGET_BOARD = 0.004        # board thickness (m)
+TARGET_MARGIN = 0.012       # white board around a picture
+
+
+def _quad(name: str, w: float, h: float) -> str:
+    """A w × h picture quad facing +x (same texcoord layout as the phone screen)."""
+    return (f'<mesh name="{name}" vertex="{_v(0, -w / 2, -h / 2, 0, w / 2, -h / 2, 0, w / 2, h / 2, 0, -w / 2, h / 2, -0.0002, 0, 0)}" '
+            'texcoord="0 1  1 1  1 0  0 0  0.5 0.5" face="0 1 2  0 2 3  4 1 0  4 2 1  4 3 2  4 0 3"/>')
+
+
+def targets_assets(world: World) -> str:
+    out = []
+    for t in world.targets:
+        if t["kind"] == "image":
+            n = t["name"]
+            out.append(f'<texture name="target_{n}" type="2d" file={quoteattr(t["image"])}/>')
+            out.append(f'<material name="target_{n}" texture="target_{n}" emission="0.35" specular="0" shininess="0"/>')
+            out.append(_quad(f"target_{n}", t["size"], t["size"]))
+    return "\n    ".join(out)
+
+
+def targets_bodies(world: World) -> str:
+    out = []
+    for t in world.targets:
+        n, s, z = t["name"], t["size"], t["z"]
+        pos = f'pos="{_v(t["x"], t["y"], z)}" euler="0 0 {t["yaw"]:.6g}"'
+        if t["kind"] == "image":
+            half = s / 2 + TARGET_MARGIN
+            post = max(z - half, 0.0)
+            geoms = (f'<geom class="target" type="box" pos="{_v(-TARGET_BOARD / 2, 0, 0)}" '
+                     f'size="{_v(TARGET_BOARD / 2, half, half)}" rgba="0.97 0.97 0.97 1"/>'
+                     f'<geom class="target" type="mesh" mesh="target_{n}" material="target_{n}" pos="0.0003 0 0"/>')
+            if post > 0:
+                geoms += (f'<geom class="target" type="cylinder" pos="{_v(-TARGET_BOARD, 0, -half - post / 2)}" '
+                          f'size="{_v(0.005, post / 2)}" rgba="{COLORS["dark"]}"/>')
+        else:
+            r, g, b = (v / 255 for v in t["color"])
+            size = _v(s / 2) if t["shape"] == "sphere" else _v(s / 2, s / 2, s / 2)
+            geoms = f'<geom class="target" type="{t["shape"]}" size="{size}" rgba="{_v(r, g, b, 1)}"/>'
+        out.append(f'<body name="target_{n}" mocap="true" {pos}>{geoms}</body>')
+    return "\n    ".join(out)
+
+
+# --------------------------------------------------------------------------- #
 # robot
 # --------------------------------------------------------------------------- #
 class _Robot:
@@ -482,6 +528,7 @@ def build_mjcf(world: World, cfg, description: Path | None) -> str:
     <material name="grid" texture="grid" texrepeat="1 1" texuniform="true"/>
     <material name="obstacle" rgba="0.55 0.62 0.72 1"/>
     {robot.assets()}
+    {targets_assets(world)}
   </asset>
   <default>
     <default class="obstacle"><geom group="0" contype="1" conaffinity="2" material="obstacle" friction="0.3 0.005 0.0001" priority="1"/></default>
@@ -490,12 +537,14 @@ def build_mjcf(world: World, cfg, description: Path | None) -> str:
     <default class="collision_visible"><geom group="1" contype="2" conaffinity="1"/></default>
     <default class="visual"><geom group="1" contype="0" conaffinity="0" density="0" type="mesh"/></default>
     <default class="phone_frame"><geom group="1" contype="0" conaffinity="0" density="0"/></default>
+    <default class="target"><geom group="1" contype="0" conaffinity="0" density="0"/></default>
   </default>
   <worldbody>
     <light pos="0 0 4" dir="0 0 -1" diffuse="0.6 0.6 0.6" castshadow="false"/>
     <geom name="floor" class="floor" type="plane" size="0 0 0.05" material="grid"/>
     {world_xml(world)}
     {robot.body(st.x, st.y, st.yaw)}
+    {targets_bodies(world)}
   </worldbody>
   <actuator>
     {robot.actuators(wheel_kv(cfg))}

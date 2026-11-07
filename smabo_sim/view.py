@@ -15,6 +15,9 @@ browser has the page open.
     GET  /view/state         → robot pose (ground truth) for the overlay
     GET  /view/models        → the roadmap models and the current one
     POST /view/model {name}  → rebuild the robot as that model (smabo_sim/models.py)
+    GET  /view/targets       → vision targets (World.targets) and where they are
+    POST /view/targets/{name} {x, y, z, yaw_deg, sway: {on, amplitude, period}}
+                             → move a target / make it sway sideways
 
 Config (``view.*``): ``width`` / ``height`` (default 960 × 600), ``fps``
 (default 15), ``jpeg_quality`` (default 80). Needs ``--engine mujoco``.
@@ -197,6 +200,29 @@ def add_view_routes(app: web.Application, get_engine, cfg, cors: dict, switch_mo
     app.router.add_get("/view/camera", get_camera)
     app.router.add_post("/view/camera", post_camera)
     app.router.add_get("/view/state", state)
+    async def targets(_request):
+        return web.json_response({"targets": get_engine().targets()})
+
+    async def post_target(request):
+        try:
+            req = await request.json()
+        except ValueError:
+            req = None
+        if not isinstance(req, dict):
+            return web.json_response({"error": "bad json"}, status=400)
+        sway = req.get("sway") if isinstance(req.get("sway"), dict) else {}
+        try:
+            get_engine().set_target(request.match_info["name"],
+                                    **{k: req.get(k) for k in ("x", "y", "z", "yaw_deg")},
+                                    **{f"sway_{k}": sway.get(k) for k in ("on", "amplitude", "period")})
+        except KeyError:
+            return web.json_response({"error": "no such target"}, status=404)
+        except (TypeError, ValueError):
+            return web.json_response({"error": "numbers expected"}, status=400)
+        return web.json_response({"targets": get_engine().targets()})
+
+    app.router.add_get("/view/targets", targets)
+    app.router.add_post("/view/targets/{name}", post_target)
     app.router.add_get("/view/models", models)
     app.router.add_post("/view/model", post_model)
 
@@ -240,12 +266,14 @@ button:hover{background:#2a2f3b}button:active{transform:translateY(1px)}
 button[aria-pressed=true]{border-color:#e07b39;color:#f3b48a}
 .hint{color:#7d8597;font-size:12px;margin-left:auto}
 .models{border-top:none;padding-bottom:0}.models::before{content:"モデル";color:#7d8597;font-size:12px;margin-right:4px}
+.targets::before{content:"ターゲットを揺らす"}.targets:empty{display:none}
 .models button{padding:5px 10px;font-size:13px}button:disabled{opacity:.5;cursor:default}
 #msg{color:#e8a0a0;font-size:12px}
 a{color:#8fb3ff}
 </style></head><body>
 <div id="stage"><img id="img" alt="simulation view"><div id="hud">…</div><div id="err"></div></div>
 <div class="bar models" id="models" role="group" aria-label="ロボットのモデル"></div>
+<div class="bar models targets" id="targets" role="group" aria-label="画像処理のターゲット"></div>
 <div class="bar">
  <button id="follow" aria-pressed="true">ロボットを追う</button>
  <button data-preset="default">視点リセット</button>
@@ -305,6 +333,19 @@ async function pick(name){const msg=document.getElementById('msg');msg.textConte
   showModels(j);start();}catch(e){await loadModels();document.getElementById('msg').textContent='切り替えに失敗しました';}}
 async function loadModels(){try{showModels(await(await fetch('/view/models')).json());}catch(e){}}
 loadModels();
+const tBar=document.getElementById('targets');
+const KIND={face:'顔',qr:'QR'};
+function tLabel(t){if(t.kind==='color')return t.name.replace(/_/g,' ');
+ if(t.name.startsWith('aruco'))return 'ArUco '+t.name.split('_').pop();return KIND[t.name]||t.name;}
+function showTargets(list){tBar.innerHTML='';
+ for(const t of list){const b=document.createElement('button');b.textContent=tLabel(t)+' ↔';
+  b.title=`(${t.x.toFixed(2)}, ${t.y.toFixed(2)}) m・振れ幅 ${t.sway.amplitude} m・周期 ${t.sway.period} s`;
+  b.setAttribute('aria-pressed',t.sway.on);
+  b.onclick=async()=>{const r=await fetch('/view/targets/'+encodeURIComponent(t.name),{method:'POST',
+   headers:{'Content-Type':'application/json'},body:JSON.stringify({sway:{on:!t.sway.on}})});
+   if(r.ok)showTargets((await r.json()).targets);};
+  tBar.appendChild(b);}}
+fetch('/view/targets').then(r=>r.json()).then(j=>showTargets(j.targets)).catch(()=>{});
 setInterval(async()=>{try{const s=await(await fetch('/view/state')).json();
  hud.textContent=`x ${s.x.toFixed(2)} m  y ${s.y.toFixed(2)} m  yaw ${s.yaw.toFixed(0)}°`+(s.blocked?'  壁に接触':'');}catch(e){hud.textContent='sim に接続できません';}},300);
 </script></body></html>"""

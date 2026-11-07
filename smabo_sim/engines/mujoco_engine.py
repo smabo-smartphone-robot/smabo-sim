@@ -37,7 +37,7 @@ import mujoco
 import numpy as np
 
 from ..world import Pose2D, World
-from .base import Engine
+from .base import Engine, apply_target_change
 from ..models import get_model
 from .mujoco_model import build_mjcf, find_description
 
@@ -87,6 +87,7 @@ class MujocoEngine(Engine):
         self.screen_version = 0          # bumped on every new screen image
         self._renderers: dict[str, mujoco.Renderer] = {}
         self._renderer_screen_version: dict[str, int] = {}
+        self._targets = {t["name"]: m.body_mocapid[m.body(f"target_{t['name']}").id] for t in world.targets}
         self.last_scan_points = np.zeros((0, 3))   # world-frame lidar hits, for the viewer
         self.blocked = False
         self.reset(world.start)
@@ -100,6 +101,7 @@ class MujocoEngine(Engine):
             if a is not None:      # fixed models stay where the world file put them
                 q[a:a + 3] = (pose.x, pose.y, self.model.body_pos[self._base][2])
                 q[a + 3:a + 7] = (math.cos(pose.yaw / 2), 0.0, 0.0, math.sin(pose.yaw / 2))
+            self._place_targets()
             mujoco.mj_forward(self.model, self.data)
             self._wheel_last = [float(q[i]) for i in self._wheel_qpos]
             self._travel = [0.0, 0.0]
@@ -127,7 +129,43 @@ class MujocoEngine(Engine):
         with self.lock():
             for _ in range(n):
                 mujoco.mj_step(self.model, self.data)
+            self._place_targets()
         self._accumulate_encoders()
+
+    # ------------------------------------------------------------------ #
+    # vision targets (World.targets; their state lives there so it survives
+    # a model switch, which builds a new engine on the same World)
+    # ------------------------------------------------------------------ #
+    def _place_targets(self) -> None:
+        t_sim = self.data.time
+        for t in self.world.targets:
+            mid = self._targets[t["name"]]
+            off = 0.0
+            sw = t["sway"]
+            if sw["on"]:
+                off = sw["amplitude"] * math.sin(2 * math.pi * t_sim / sw["period"])
+            # sideways = across the picture (perpendicular to where it faces)
+            self.data.mocap_pos[mid] = (t["x"] - off * math.sin(t["yaw"]),
+                                        t["y"] + off * math.cos(t["yaw"]), t["z"])
+            self.data.mocap_quat[mid] = (math.cos(t["yaw"] / 2), 0.0, 0.0, math.sin(t["yaw"] / 2))
+
+    def targets(self) -> list[dict]:
+        """Vision targets with their current position (for /view and tests)."""
+        out = []
+        for t in self.world.targets:
+            p = self.data.mocap_pos[self._targets[t["name"]]]
+            out.append({"name": t["name"], "kind": t["kind"], "x": float(p[0]), "y": float(p[1]),
+                        "z": float(p[2]), "yaw_deg": math.degrees(t["yaw"]), "size": t["size"],
+                        "sway": dict(t["sway"])})
+        return out
+
+    def set_target(self, name: str, **change) -> None:
+        """Move a target or set its sway: x, y, z (m), yaw_deg, sway_on,
+        sway_amplitude (m), sway_period (s). Unknown names raise KeyError."""
+        apply_target_change(self.world.target(name), change)
+        with self.lock():
+            self._place_targets()
+            mujoco.mj_forward(self.model, self.data)
 
     def _accumulate_encoders(self) -> None:
         noise = self.cfg.get("sim.encoder_noise", 0.0)

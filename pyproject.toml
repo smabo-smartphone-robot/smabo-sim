@@ -31,4 +31,4 @@ include = ["smabo_sim*"]
 testpaths = ["tests"]
 
 [tool.setuptools.package-data]
-smabo_sim = ["worlds/*.yaml"]
+smabo_sim = ["worlds/*.yaml", "worlds/targets/*.png"]
