@@ -29,7 +29,7 @@ docker compose run --rm smabo-ros ros2 launch smabo_bringup bringup.launch.py \
   mount:=tt_motor map:=/opt/smabo_ws/src/smabo-brain-ros/smabo_navigation/maps/sim_room.yaml
 ```
 
-smabo-web では、brain の接続先を `localhost:9090`、ESP32 の接続先を `localhost:8080` にします。走行・サーボのタブは brain-ros 経由でシミュレータを動かし、設定タブ（REST）はシミュレータに直接つながります。
+smabo-web では、brain の接続先を `localhost:9090` にします。ESP32 の接続先（REST）は、シミュレータが `/esp32/config_url` で知らせるので自動で `http://localhost:8080` になります。走行・サーボのタブは brain 経由でシミュレータを動かし、設定タブ（REST）はシミュレータに直接つながります。
 
 ### MuJoCo（物理演算と 3D ビューアー）
 
@@ -44,6 +44,21 @@ smabo-web では、brain の接続先を `localhost:9090`、ESP32 の接続先�
 - キャスターは摩擦のない球、アームは SG90 のトルク上限つきの位置制御サーボです。アームは棚や床に当たると止まります。
 - LiDAR は laser の位置から 360 本の光線を障害物に飛ばします。ビューアーでは、当たった点を赤い点で表示します。
 - ビューアーを閉じるとシミュレータも終了します。
+
+### ブラウザで見る（ウィンドウなし）
+
+`--viewer` を付けずに MuJoCo で起動し、ブラウザで `http://localhost:8080/view` を開きます。
+
+```bash
+.venv/bin/python -m smabo_sim --engine mujoco      # macOS でも mjpython は不要
+```
+
+- MuJoCo が画面に出さずに描いた映像を MJPEG で流します。ページを開いている間だけ描画します（複数のブラウザで開いても描画は 1 回分）。
+- ドラッグで回転、Shift＋ドラッグか右ドラッグで移動、ホイールでズームです。「ロボットを追う」「真上」「視点リセット」「LiDAR点」のボタンがあります。視点はページを開いている全員で共有です。
+- 左上にロボットの実際の位置（シミュレータ内の真値）を出します。
+- 別の PC やスマホからは `http://<シミュレータのPCのIP>:8080/view` で見られます。
+- 解像度とフレームレートは `view.width` / `view.height`（既定 960×600）、`view.fps`（既定 15）、画質は `view.jpeg_quality`（既定 80）です。
+- `kinematic` エンジンでは描くものがないので、ページにその旨を表示します。
 
 ### スマホ（smabo-app の部分）
 
@@ -77,7 +92,7 @@ smabo-sim は ESP32 だけでなく、前面ホルダーに挿したスマホ（
 | `--world w.yaml` | ワールド（既定は同梱の `smabo_sim/worlds/room.yaml`） |
 | `--http-port` | REST API のポート（既定 8080。ESP32 は 80） |
 | `--engine` | `kinematic`（既定）または `mujoco` |
-| `--viewer` | MuJoCo の 3D ビューアーを開く（`--engine mujoco` が必要） |
+| `--viewer` | MuJoCo の 3D ビューアーを開く（`--engine mujoco` が必要）。ブラウザで見るだけなら不要（`/view`） |
 | `--no-phone` | スマホ（顔・IMU・GPS・カメラ・音声）を再現しない |
 | `--mute` | `/speech/say` を読み上げない（吹き出しだけ） |
 | `--seed` | センサーノイズの乱数シード |
@@ -88,6 +103,7 @@ smabo-sim は ESP32 だけでなく、前面ホルダーに挿したスマホ（
 |---|---|---|
 | ファームウェア | `firmware.py`, `robot.py`, `http_api.py`, `link.py` | ESP32 の処理を移植したもの。cmd_vel から左右の duty への変換（`dc.min_duty` の床上げ、0.5 秒で止まるタイムアウトを含む）、サーボの軌道追従と速度制限、`servos.behavior: "random"` のランダム動作（`random_motion.py`、`servos.random_groups` のグループごとに実機と同じ計算で動かす）、モードによる有効・無効、送信周期、REST API、再接続 |
 | エンジン | `engines/` | 実際に起きること。車輪の動き、エンコーダ、LiDAR。差し替え可能 |
+| 表示 | `view.py` | ブラウザ用の 3D 表示（`/view`）。MuJoCo の画面外描画を MJPEG で配信し、視点はドラッグで操作 |
 | ワールド | `world.py`, `worlds/*.yaml` | 壁や障害物の輪郭。LiDAR の光線計算と、Nav2 用地図の書き出しに使う |
 
 エンジンは `kinematic`（運動学、既定）と `mujoco`（物理演算）の 2 つです。`kinematic` は次のとおりです。

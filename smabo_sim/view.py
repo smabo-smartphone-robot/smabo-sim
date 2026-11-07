@@ -1,0 +1,232 @@
+"""The simulation in a web browser: ``http://localhost:<http.port>/view``.
+
+The MuJoCo world is rendered offscreen (no window) from an orbit camera and
+streamed as MJPEG, so ``--viewer`` is not needed. Nothing is rendered while no
+browser has the page open.
+
+    GET  /view               → page: the stream, drag to orbit, wheel to zoom
+    GET  /view/stream.mjpg   → the view as an MJPEG stream
+    GET  /view/frame.jpg     → one frame
+    GET  /view/camera        → the camera ({azimuth, elevation, distance, follow, lookat})
+    POST /view/camera        → change it: {"orbit": [dx, dy]} (deg), {"zoom": factor},
+                               {"pan": [right, forward]} (m, stops following),
+                               {"follow": bool}, {"preset": "default" | "top"},
+                               or any camera field directly
+    GET  /view/state         → robot pose (ground truth) for the overlay
+
+Config (``view.*``): ``width`` / ``height`` (default 960 × 600), ``fps``
+(default 15), ``jpeg_quality`` (default 80). Needs ``--engine mujoco``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import io
+import math
+import time
+
+from aiohttp import web
+
+_DEFAULT = {"azimuth": -140.0, "elevation": -30.0, "distance": 1.2, "follow": True,
+            "lookat": [0.0, 0.0, 0.0]}
+_TOP = {"azimuth": -90.0, "elevation": -89.0, "distance": 4.0}
+
+
+class ViewCamera:
+    """The orbit camera shared by every browser that has /view open."""
+
+    def __init__(self) -> None:
+        self.state = {**_DEFAULT, "lookat": list(_DEFAULT["lookat"])}
+        self.version = 0
+
+    def apply(self, req: dict, robot_xy: tuple[float, float]) -> dict:
+        s = self.state
+        if req.get("preset") == "top":
+            s.update(_TOP)
+        elif req.get("preset") == "default":
+            s.update({**_DEFAULT, "lookat": list(_DEFAULT["lookat"])})
+        for key in ("azimuth", "elevation", "distance"):
+            if isinstance(req.get(key), (int, float)):
+                s[key] = float(req[key])
+        if isinstance(req.get("lookat"), list) and len(req["lookat"]) == 3:
+            s["lookat"] = [float(v) for v in req["lookat"]]
+        if "follow" in req:
+            s["follow"] = bool(req["follow"])
+            if not s["follow"]:
+                s["lookat"] = [robot_xy[0], robot_xy[1], 0.05]
+        if isinstance(req.get("orbit"), list) and len(req["orbit"]) == 2:
+            s["azimuth"] -= float(req["orbit"][0])
+            s["elevation"] -= float(req["orbit"][1])
+        if isinstance(req.get("zoom"), (int, float)) and req["zoom"] > 0:
+            s["distance"] *= float(req["zoom"])
+        if isinstance(req.get("pan"), list) and len(req["pan"]) == 2:
+            if s["follow"]:
+                s["follow"] = False
+                s["lookat"] = [robot_xy[0], robot_xy[1], 0.05]
+            # move the look-at point in the ground plane, relative to the view direction
+            right, fwd = (float(v) * s["distance"] for v in req["pan"])
+            az = math.radians(s["azimuth"])
+            s["lookat"][0] += fwd * math.cos(az) + right * math.sin(az)
+            s["lookat"][1] += fwd * math.sin(az) - right * math.cos(az)
+        s["azimuth"] = (s["azimuth"] + 180.0) % 360.0 - 180.0
+        s["elevation"] = min(max(s["elevation"], -89.0), 89.0)
+        s["distance"] = min(max(s["distance"], 0.15), 30.0)
+        self.version += 1
+        return dict(s)
+
+
+def _jpeg(img, quality: int) -> bytes:
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.fromarray(img).save(buf, format="JPEG", quality=quality)
+    return buf.getvalue()
+
+
+def add_view_routes(app: web.Application, engine, cfg, cors: dict) -> None:
+    has_view = hasattr(engine, "render_view")
+    width = int(cfg.get("view.width", 960))
+    height = int(cfg.get("view.height", 600))
+    fps = max(float(cfg.get("view.fps", 15.0)), 0.5)
+    quality = int(cfg.get("view.jpeg_quality", 80))
+    camera = ViewCamera()
+    show = {"scan": True}
+    cache = {"t": -1.0, "version": -1, "jpg": b""}
+
+    def frame() -> bytes:
+        # one render per frame period (or camera change), shared by every viewer
+        now = time.monotonic()
+        if now - cache["t"] >= 1.0 / fps or cache["version"] != camera.version:
+            cache["jpg"] = _jpeg(engine.render_view(camera.state, width, height, show["scan"]), quality)
+            cache["t"], cache["version"] = now, camera.version
+        return cache["jpg"]
+
+    def need_mujoco():
+        return web.json_response({"error": "the browser view needs --engine mujoco"}, status=404)
+
+    def robot_xy() -> tuple[float, float]:
+        p = engine.pose()
+        return p.x, p.y
+
+    async def page(_request):
+        return web.Response(text=_PAGE, content_type="text/html")
+
+    async def one(_request):
+        if not has_view:
+            return need_mujoco()
+        return web.Response(body=frame(), content_type="image/jpeg",
+                            headers={"Cache-Control": "no-store"})
+
+    async def stream(request):
+        if not has_view:
+            return need_mujoco()
+        resp = web.StreamResponse(headers={
+            "Content-Type": "multipart/x-mixed-replace; boundary=frame",
+            "Cache-Control": "no-store", **cors})
+        await resp.prepare(request)
+        try:
+            while True:
+                jpg = frame()
+                await resp.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                                 + str(len(jpg)).encode() + b"\r\n\r\n" + jpg + b"\r\n")
+                await asyncio.sleep(1.0 / fps)
+        except (ConnectionResetError, asyncio.CancelledError):
+            pass
+        return resp
+
+    async def get_camera(_request):
+        return web.json_response({**camera.state, "scan": show["scan"]})
+
+    async def post_camera(request):
+        try:
+            req = await request.json()
+        except ValueError:
+            req = None
+        if not isinstance(req, dict):
+            return web.json_response({"error": "bad json"}, status=400)
+        if "scan" in req:
+            show["scan"] = bool(req["scan"])
+        return web.json_response({**camera.apply(req, robot_xy()), "scan": show["scan"]})
+
+    async def state(_request):
+        p = engine.pose()
+        return web.json_response({"x": p.x, "y": p.y, "yaw": math.degrees(p.yaw),
+                                  "blocked": bool(getattr(engine, "blocked", False)),
+                                  "engine": "mujoco" if has_view else "kinematic"})
+
+    app.router.add_get("/view", page)
+    app.router.add_get("/view/stream.mjpg", stream)
+    app.router.add_get("/view/frame.jpg", one)
+    app.router.add_get("/view/camera", get_camera)
+    app.router.add_post("/view/camera", post_camera)
+    app.router.add_get("/view/state", state)
+
+
+_PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>smabo-sim view</title>
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:#101216;color:#cfd3dc;font:14px system-ui,sans-serif;height:100dvh;display:flex;flex-direction:column}
+#stage{position:relative;flex:1;min-height:0;display:flex;align-items:center;justify-content:center;overflow:hidden;
+ touch-action:none;cursor:grab;user-select:none}
+#stage.drag{cursor:grabbing}
+#img{max-width:100%;max-height:100%;display:block;pointer-events:none}
+#hud{position:absolute;left:12px;top:12px;padding:6px 10px;border-radius:6px;background:#0009;
+ font:12px ui-monospace,monospace;font-variant-numeric:tabular-nums;white-space:pre}
+#err{position:absolute;inset:0;display:none;align-items:center;justify-content:center;padding:16px;text-align:center;color:#e8a0a0}
+.bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:10px 16px;border-top:1px solid #262a33;background:#15181e}
+button{padding:7px 12px;border-radius:6px;border:1px solid #333a48;background:#20242e;color:inherit;font:inherit;cursor:pointer}
+button:hover{background:#2a2f3b}button:active{transform:translateY(1px)}
+button[aria-pressed=true]{border-color:#e07b39;color:#f3b48a}
+.hint{color:#7d8597;font-size:12px;margin-left:auto}
+a{color:#8fb3ff}
+</style></head><body>
+<div id="stage"><img id="img" alt="simulation view"><div id="hud">…</div><div id="err"></div></div>
+<div class="bar">
+ <button id="follow" aria-pressed="true">ロボットを追う</button>
+ <button data-preset="default">視点リセット</button>
+ <button data-preset="top">真上</button>
+ <button data-zoom="0.8">＋</button><button data-zoom="1.25">－</button>
+ <button id="scan" aria-pressed="true">LiDAR点</button>
+ <span class="hint">ドラッグ: 回転 / Shift・右ドラッグ: 移動 / ホイール: ズーム ・ <a href="/phone">スマホ画面</a></span>
+</div>
+<script>
+const img=document.getElementById('img'),stage=document.getElementById('stage'),hud=document.getElementById('hud'),
+ err=document.getElementById('err'),fBtn=document.getElementById('follow'),sBtn=document.getElementById('scan');
+function show(c){fBtn.setAttribute('aria-pressed',c.follow);sBtn.setAttribute('aria-pressed',c.scan);}
+let busy=false,pending=null;
+async function cam(body){
+ if(busy){pending=Object.assign(pending||{},merge(pending,body));return;}
+ busy=true;
+ try{const r=await fetch('/view/camera',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(r.ok)show(await r.json());}catch(e){}
+ busy=false;
+ if(pending){const p=pending;pending=null;cam(p);}
+}
+// accumulate drags that arrive while a request is in flight
+function merge(a,b){a=a||{};const o={...b};
+ for(const k of['orbit','pan'])if(a[k]&&b[k])o[k]=[a[k][0]+b[k][0],a[k][1]+b[k][1]];
+ if(a.zoom&&b.zoom)o.zoom=a.zoom*b.zoom;return o;}
+function start(){img.src='/view/stream.mjpg?'+Date.now();}
+img.onerror=async()=>{try{const r=await fetch('/view/frame.jpg');if(!r.ok){const j=await r.json();
+ err.textContent=j.error;err.style.display='flex';return;}}catch(e){}setTimeout(start,1500);};
+start();
+fetch('/view/camera').then(r=>r.json()).then(show);
+let last=null,mode='orbit';
+stage.addEventListener('contextmenu',e=>e.preventDefault());
+stage.addEventListener('pointerdown',e=>{last=[e.clientX,e.clientY];
+ mode=(e.shiftKey||e.button===2)?'pan':'orbit';stage.classList.add('drag');
+ try{stage.setPointerCapture(e.pointerId);}catch(_){}});
+stage.addEventListener('pointermove',e=>{if(!last)return;const dx=e.clientX-last[0],dy=e.clientY-last[1];last=[e.clientX,e.clientY];
+ if(mode==='orbit')cam({orbit:[dx*0.4,dy*0.4]});
+ else{const h=stage.clientHeight||600;cam({pan:[-dx/h,dy/h]});}});
+const end=()=>{last=null;stage.classList.remove('drag');};
+stage.addEventListener('pointerup',end);stage.addEventListener('pointercancel',end);
+stage.addEventListener('wheel',e=>{e.preventDefault();cam({zoom:Math.exp(e.deltaY*0.001)});},{passive:false});
+fBtn.onclick=()=>cam({follow:fBtn.getAttribute('aria-pressed')!=='true'});
+sBtn.onclick=()=>cam({scan:sBtn.getAttribute('aria-pressed')!=='true'});
+document.querySelectorAll('[data-preset]').forEach(b=>b.onclick=()=>cam({preset:b.dataset.preset}));
+document.querySelectorAll('[data-zoom]').forEach(b=>b.onclick=()=>cam({zoom:+b.dataset.zoom}));
+setInterval(async()=>{try{const s=await(await fetch('/view/state')).json();
+ hud.textContent=`x ${s.x.toFixed(2)} m  y ${s.y.toFixed(2)} m  yaw ${s.yaw.toFixed(0)}°`+(s.blocked?'  壁に接触':'');}catch(e){hud.textContent='sim に接続できません';}},300);
+</script></body></html>"""

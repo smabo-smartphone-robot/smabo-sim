@@ -83,6 +83,8 @@ async def run(cfg: Config, world: World, viewer: bool = False) -> None:
              cfg.get("sim.engine"))
     log.info("REST config API on http://localhost:%d  (smabo-web: ESP32 host = localhost:%d)", port, port)
     log.info("brain: %s", url())
+    if hasattr(engine, "render_view"):
+        log.info("3D view in the browser: http://localhost:%d/view", port)
     if phone is not None:
         log.info("phone (smabo-app part): screen + camera on http://localhost:%d/phone", port)
 

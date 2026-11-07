@@ -79,8 +79,8 @@ class MujocoEngine(Engine):
             self._accel = m.sensor("phone_accel").adr[0]
             self._gyro = m.sensor("phone_gyro").adr[0]
         self.screen_version = 0          # bumped on every new screen image
-        self._renderer = None
-        self._renderer_screen_version = -1
+        self._renderers: dict[str, mujoco.Renderer] = {}
+        self._renderer_screen_version: dict[str, int] = {}
         self.last_scan_points = np.zeros((0, 3))   # world-frame lidar hits, for the viewer
         self.blocked = False
         self.reset(world.start)
@@ -188,20 +188,65 @@ class MujocoEngine(Engine):
         """
         if not self.has_phone:
             raise RuntimeError("this model has no phone (phone.enabled is false)")
-        if self._renderer is None:
-            w = int(self.cfg.get("phone.camera.width", 640))
-            h = int(self.cfg.get("phone.camera.height", 480))
-            self.model.vis.global_.offwidth = max(self.model.vis.global_.offwidth, w)
-            self.model.vis.global_.offheight = max(self.model.vis.global_.offheight, h)
-            self._renderer = mujoco.Renderer(self.model, h, w)
-        r = self._renderer
-        if self._renderer_screen_version != self.screen_version:
-            # this context has its own copy of the screen texture
-            r._gl_context.make_current()
-            mujoco.mjr_uploadTexture(self.model, r._mjr_context, self.screen_tex)
-            self._renderer_screen_version = self.screen_version
+        r = self._renderer_for("phone", int(self.cfg.get("phone.camera.width", 640)),
+                               int(self.cfg.get("phone.camera.height", 480)))
         with self.lock():
             r.update_scene(self.data, camera="phone_camera")
+        return r.render().copy()
+
+    # ------------------------------------------------------------------ #
+    # offscreen rendering (the phone camera and the browser view)
+    # ------------------------------------------------------------------ #
+    def _renderer_for(self, name: str, width: int, height: int) -> mujoco.Renderer:
+        """An offscreen renderer per use, created on first call.
+
+        Each has its own OpenGL context, which belongs to the thread that
+        created it, and its own copy of the phone screen texture (re-uploaded
+        when the face changes).
+        """
+        r = self._renderers.get(name)
+        if r is None or (r.width, r.height) != (width, height):
+            if r is not None:
+                r.close()
+            g = self.model.vis.global_
+            g.offwidth, g.offheight = max(g.offwidth, width), max(g.offheight, height)
+            r = self._renderers[name] = mujoco.Renderer(self.model, height, width)
+            self._renderer_screen_version[name] = -1
+        if self.has_phone and self._renderer_screen_version[name] != self.screen_version:
+            r._gl_context.make_current()
+            mujoco.mjr_uploadTexture(self.model, r._mjr_context, self.screen_tex)
+            self._renderer_screen_version[name] = self.screen_version
+        return r
+
+    def render_view(self, cam: dict, width: int, height: int, scan: bool = True) -> np.ndarray:
+        """The world from an orbit camera, as an (H, W, 3) uint8 RGB image.
+
+        ``cam``: ``azimuth`` / ``elevation`` (deg), ``distance`` (m), and either
+        ``follow: True`` (orbit around the robot) or ``lookat`` ``[x, y, z]``.
+        ``scan`` draws the latest lidar hits as red dots, like ``--viewer``.
+        Same thread rule as ``render_phone_camera``.
+        """
+        r = self._renderer_for("view", width, height)
+        c = mujoco.MjvCamera()
+        c.azimuth, c.elevation, c.distance = cam["azimuth"], cam["elevation"], cam["distance"]
+        if cam.get("follow", True):
+            c.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+            c.trackbodyid = self._base
+        else:
+            c.type = mujoco.mjtCamera.mjCAMERA_FREE
+            c.lookat[:] = cam.get("lookat", (0.0, 0.0, 0.0))
+        with self.lock():
+            r.update_scene(self.data, camera=c)
+            pts = self.last_scan_points
+        if scan and len(pts):
+            scn = r.scene
+            eye, size = np.eye(3).ravel(), np.array([0.012, 0.0, 0.0])
+            rgba = np.array([1.0, 0.25, 0.2, 0.9], dtype=np.float32)
+            n = min(len(pts), scn.maxgeom - scn.ngeom)
+            for i in range(n):
+                mujoco.mjv_initGeom(scn.geoms[scn.ngeom + i], mujoco.mjtGeom.mjGEOM_SPHERE,
+                                    size, pts[i], eye, rgba)
+            scn.ngeom += n
         return r.render().copy()
 
     def phone_imu(self) -> tuple[np.ndarray, np.ndarray]:

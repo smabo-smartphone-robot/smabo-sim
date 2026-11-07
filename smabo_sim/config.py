@@ -100,6 +100,8 @@ DEFAULTS: dict[str, Any] = {
         "range_min": 0.05,
         "range_max": 12.0,
     },
+    # ---- the browser view (http://localhost:<http.port>/view, MuJoCo) ---
+    "view": {"width": 960, "height": 600, "fps": 15.0, "jpeg_quality": 80},
     # ---- the smartphone (smabo-app's part of the robot) -----------------
     "phone": {
         "enabled": True,                # face, IMU and camera of the phone in the holder

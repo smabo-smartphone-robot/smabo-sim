@@ -14,6 +14,10 @@ Simulator extras (the phone, i.e. smabo-app's part):
                                {"text": "..."} synthesized to speech, {"listen": true}
                                records the host microphone, or a raw audio/wav body
 
+The simulation itself, in a browser (no ``--viewer`` window needed; see view.py):
+
+    GET  /view               → page with the 3D view (drag to orbit, wheel to zoom)
+
 smabo-web talks to this directly; point its ESP32 host field at
 ``localhost:<http.port>`` (default 8080).
 """
@@ -28,6 +32,7 @@ import time
 from aiohttp import web
 
 from .robot import SimRobot
+from .view import add_view_routes
 
 _CORS = {
     "Access-Control-Allow-Origin": "*",
@@ -111,6 +116,7 @@ def build_app(robot: SimRobot, phone=None) -> web.Application:
     app.router.add_get("/config", get_config)
     app.router.add_post("/config", post_config)
     app.router.add_post("/mode", post_mode)
+    add_view_routes(app, robot.engine, robot.cfg, _CORS)
     if phone is not None:
         _add_phone_routes(app, phone)
     return app
