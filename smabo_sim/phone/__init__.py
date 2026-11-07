@@ -38,6 +38,7 @@ from typing import Callable
 
 import numpy as np
 
+from ..protocol import APP_ADVERTISE, APP_PREFIX, APP_SUBSCRIBE, BRAIN_PATH
 from ..world import Pose2D
 from . import voice
 from .face import Face
@@ -46,20 +47,6 @@ from .webrtc import CameraStreamer
 
 log = logging.getLogger(__name__)
 
-APP_PREFIX = "/app"
-ROSBRIDGE_ADVERTISE = (
-    ("/app/imu/data",       "sensor_msgs/msg/Imu"),
-    ("/app/gps/fix",        "sensor_msgs/msg/NavSatFix"),
-    ("/app/speech/audio",   "audio_common_msgs/msg/AudioData"),
-    ("/app/webrtc/offer",   "std_msgs/msg/String"),
-    ("/app/webrtc/app_ice", "std_msgs/msg/String"),
-)
-ROSBRIDGE_SUBSCRIBE = (
-    ("/expression",    "std_msgs/msg/Int32"),
-    ("/look_at",       "geometry_msgs/msg/PoseStamped"),
-    ("/speech/say",    "std_msgs/msg/String"),
-    ("/webrtc/answer", "std_msgs/msg/String"),
-)
 GRAVITY = 9.81
 EARTH_RADIUS = 6378137.0     # m, WGS-84 equatorial (local flat-earth approximation)
 
@@ -113,13 +100,12 @@ class SimPhone:
     # connection
     # ------------------------------------------------------------------ #
     def ws_path(self) -> str:
-        # smabo-brain and smabo-brain-ros both accept the rosbridge handshake at "/"
-        return "/"
+        return BRAIN_PATH
 
     def on_brain_connect(self) -> None:
-        for topic, typ in ROSBRIDGE_ADVERTISE:
+        for topic, typ in APP_ADVERTISE:
             self._frame({"op": "advertise", "topic": topic, "type": typ})
-        for topic, typ in ROSBRIDGE_SUBSCRIBE:
+        for topic, typ in APP_SUBSCRIBE:
             self._frame({"op": "subscribe", "topic": topic, "type": typ})
         if self.camera is not None:
             # like the app after (re)connecting: offer the camera to the brain

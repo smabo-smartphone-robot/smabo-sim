@@ -28,21 +28,9 @@ import numpy as np
 from .config import Config
 from .engines import Engine
 from .firmware import DriveFirmware, ServoFirmware
+from .protocol import BRAIN_PATH, ESP32_ADVERTISE, ESP32_PREFIX, ESP32_SUBSCRIBE
 from .random_motion import RandomMotion
 
-ROSBRIDGE_ADVERTISE = (
-    ("/esp32/config",       "std_msgs/msg/String"),
-    ("/esp32/wheel_vel",    "smabo_interfaces/msg/WheelVel"),
-    ("/esp32/joint_states", "sensor_msgs/msg/JointState"),
-    ("/esp32/scan",         "sensor_msgs/msg/LaserScan"),
-    ("/esp32/pong",         "std_msgs/msg/String"),
-)
-ROSBRIDGE_SUBSCRIBE = (
-    ("/cmd_vel",       "geometry_msgs/msg/Twist"),
-    ("/servo/command", "trajectory_msgs/msg/JointTrajectory"),
-    ("/ping",          "std_msgs/msg/String"),
-)
-SOURCE_PREFIX = "/esp32"
 
 
 def ros_stamp(t: float) -> dict:
@@ -85,7 +73,7 @@ class SimRobot:
         self.send(json.dumps(obj))
 
     def publish(self, topic: str, msg: dict) -> None:
-        self._frame({"op": "publish", "topic": SOURCE_PREFIX + topic, "msg": msg})
+        self._frame({"op": "publish", "topic": ESP32_PREFIX + topic, "msg": msg})
 
     def notice(self, message: str) -> None:
         self._frame({"op": "notice", "message": message})
@@ -100,13 +88,12 @@ class SimRobot:
     # connection lifecycle
     # ------------------------------------------------------------------ #
     def ws_path(self) -> str:
-        # smabo-brain and smabo-brain-ros both accept the rosbridge handshake at "/"
-        return self.cfg.get("brain.path") or "/"
+        return self.cfg.get("brain.path") or BRAIN_PATH
 
     def on_brain_connect(self) -> None:
-        for topic, typ in ROSBRIDGE_ADVERTISE:
+        for topic, typ in ESP32_ADVERTISE:
             self._frame({"op": "advertise", "topic": topic, "type": typ})
-        for topic, typ in ROSBRIDGE_SUBSCRIBE:
+        for topic, typ in ESP32_SUBSCRIBE:
             self._frame({"op": "subscribe", "topic": topic, "type": typ})
         self.sync_config_to_brain()
 
