@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smabo-sim"
+version = "0.1.0"
+description = "Drop-in simulated smabo-esp32: same rosbridge topics and REST API, simulated hardware"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+  "aiohttp>=3.9",
+  "numpy>=1.24",
+  "pyyaml>=6.0",
+  "pillow>=10.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+mujoco = ["mujoco>=3.1"]
+webrtc = ["aiortc>=1.9"]
+voice = ["sounddevice>=0.4"]
+
+[project.scripts]
+smabo-sim = "smabo_sim.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["smabo_sim*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.package-data]
+smabo_sim = ["worlds/*.yaml"]

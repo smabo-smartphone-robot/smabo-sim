@@ -1,0 +1,14 @@
+# Bundled smabo-sim world: a 6 m x 5 m room with a shelf, a table, a pillar and
+# a partition. Coordinates are in the map frame (m, deg); x forward from the
+# start pose, y to the left. Only outlines at LD06 height matter.
+#
+# Export the matching Nav2 map with:
+#   smabo-sim export-map smabo_sim/worlds/room.yaml -o <dir>/sim_room
+name: room
+start: {x: 0.0, y: 0.0, yaw_deg: 0}
+shapes:
+  - {type: room,     x: 0.0,  y: 0.0,  w: 6.0, h: 5.0}                     # outer walls
+  - {type: box,      x: 2.6,  y: 1.2,  w: 0.3, h: 0.8, name: shelf}        # against the +x wall
+  - {type: box,      x: -1.8, y: -1.4, w: 0.8, h: 0.5, name: table}
+  - {type: cylinder, x: 1.0,  y: -1.3, r: 0.12, name: pillar}
+  - {type: wall,     x1: -1.0, y1: 2.5, x2: -1.0, y2: 0.9, name: partition}
