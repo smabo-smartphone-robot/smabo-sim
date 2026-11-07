@@ -49,6 +49,9 @@ class Engine(ABC):
     def read_wheel_distance(self) -> tuple[float, float]:
         """Encoder distance (m) travelled by each wheel since the last call."""
 
+    def close(self) -> None:
+        """Release resources (renderers) before the engine is replaced."""
+
     @abstractmethod
     def scan(self, angles: np.ndarray, range_min: float, range_max: float) -> np.ndarray:
         """Lidar ranges for ``angles`` (rad, laser frame); 0.0 = no return."""

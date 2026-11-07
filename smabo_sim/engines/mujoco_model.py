@@ -1,17 +1,27 @@
 """Build the MuJoCo model (MJCF) for smabo-sim: the world plus the smabo robot.
 
-The robot mirrors smabo_description (smabo-brain-ros) with ``mount:=tt_motor
-arm:=true``: the same link frames, joint names, axes and limits, so joint
-angles mean exactly what they mean in the URDF / MoveIt.
+The robot mirrors smabo_description (smabo-brain-ros) for the configuration
+picked by ``sim.model`` (``smabo_sim.models``: one per roadmap step): the same
+link frames, joint names, axes and limits, so joint angles mean exactly what
+they mean in the URDF / MoveIt. The full tree (``full``, i.e. ``mount:=tt_motor
+arm:=true`` plus the other modules where a model has them):
 
-  base_link (free joint, bottom centre of the base box)
-    ├─ chassis (TT motor chassis, ball caster)
+  [pan_stand_link (fixed on the floor) ─ pan_link ← head_pan (z)]   mount:=neck
+  base_link (bottom centre of the base box; free joint only with tt_motor,
+             otherwise fixed on the floor or on pan_link)
+    ├─ chassis (TT motor chassis, ball caster)                      mount:=tt_motor
     │    ├─ left_wheel_link   ← left_wheel_joint  (hinge y, velocity motor)
     │    └─ right_wheel_link  ← right_wheel_joint
-    ├─ laser site (z 0.115, URDF laser_joint)
-    └─ arm_base_link
-         └─ arm_link_1 ← arm_joint_1 (z) ─ arm_link_2 ← arm_joint_2 (y)
-              ─ arm_link_3 ← arm_joint_3 (y) ─ arm_link_4 ← arm_joint_4 (x, gripper)
+    ├─ laser site (z 0.115, URDF laser_joint)                       lidar
+    ├─ arm_base_link                                                arm:=true
+    │    └─ arm_link_1 ← arm_joint_1 (z) ─ arm_link_2 ← arm_joint_2 (y)
+    │         ─ arm_link_3 ← arm_joint_3 (y) ─ arm_link_4 ← arm_joint_4 (x, gripper)
+    ├─ hand_mount_link ─ left/right_hand_link ← left/right_hand (−y)  hand:=true
+    ├─ breadboard_link                                              breadboard:=true
+    └─ phone (front holder)
+
+The ``phone`` model has no base: base_link is an empty frame on the floor and
+the phone stands on a small stand in front of it.
 
 Visual meshes are the smabo_description STL files when they can be found
 (``sim.description`` or a sibling smabo-brain-ros checkout); otherwise simple
@@ -34,6 +44,7 @@ from xml.sax.saxutils import quoteattr
 
 import numpy as np
 
+from ..models import get_model
 from ..world import World
 
 # ---- geometry from smabo_description (metres, base_link frame) ------------
@@ -62,14 +73,27 @@ ARM_CAPSULES = {
 }
 MASS = {"base_link": 0.30, "chassis": 0.15, "wheel": 0.03, "caster": 0.005,
         "arm_base_link": 0.03, "arm_link_1": 0.03, "arm_link_2": 0.03,
-        "arm_link_3": 0.03, "arm_link_4": 0.005}
+        "arm_link_3": 0.03, "arm_link_4": 0.005, "hand": 0.02, "pan_link": 0.05}
+# hands (smabo_hand.xacro): joint origins in hand_mount_link (= base_link)
+HAND_JOINTS = (("left_hand", "left_hand_link", (0.0003, 0.052, 0.050), 1),
+               ("right_hand", "right_hand_link", (-0.0003, -0.052, 0.050), -1))
+HAND_BOX = (0.010, 0.0185, 0.030)          # fallback / collision half sizes (y extends outward)
+# neck (smabo_neck.xacro)
+PAN_JOINT_Z = 0.0438                      # head_pan above pan_stand_link (floor)
+PAN_TO_BASE_Z = 0.015                     # base_link above pan_link
+PAN_STAND = (0.057, 0.0508)               # fallback cylinder radius, height
+PAN_PLATE = (0.055, 0.018)
+BREADBOARD_BOX = ((-0.0725, -0.047), (-0.05, 0.05), (0.0005, 0.0978))
 COLORS = {"base": "0.60 0.64 0.70 1", "part": "0.95 0.95 0.95 1", "mount": "0.80 0.82 0.86 1",
           "accent": "0.98 0.57 0.24 1", "dark": "0.15 0.15 0.18 1"}
 ARM_COLOR = {"arm_base_link": "mount", "arm_link_1": "part", "arm_link_2": "part",
              "arm_link_3": "part", "arm_link_4": "accent"}
 MESH_MODULE = {"base_link": "smabo_base", "chassis_link": "smabo_tt_motor",
                "left_wheel_link": "smabo_tt_motor", "right_wheel_link": "smabo_tt_motor",
-               **{n: "smabo_arm" for n in ARM_COLOR}}
+               **{n: "smabo_arm" for n in ARM_COLOR},
+               "hand_mount_link": "smabo_hand", "left_hand_link": "smabo_hand",
+               "right_hand_link": "smabo_hand", "pan_stand_link": "smabo_neck",
+               "pan_link": "smabo_neck", "breadboard_link": "smabo_breadboard"}
 
 # ---- the smartphone (smabo-app) in the front holder ------------------------
 # smabo_base's front plate ends at x = 0.053; the holder hooks (smartphone_long/
@@ -97,6 +121,7 @@ def phone_axes(camera_side: str) -> tuple[tuple, tuple, tuple]:
 
 
 SERVO_TORQUE = 0.18        # N·m, SG90 stall torque
+PAN_TORQUE = 1.0           # N·m, MG996R (head_pan) stall torque
 WHEEL_TORQUE = 0.10        # N·m, TT gear motor (~6 V) stall torque at the wheel
 
 
@@ -192,6 +217,7 @@ class _Robot:
     def __init__(self, meshes: bool, cfg) -> None:
         self.meshes = meshes
         self.cfg = cfg
+        self.model = get_model(cfg.get("sim.model"))
         # collision shapes are what you see when there are no meshes
         self.col = "collision" if meshes else "collision_visible"
 
@@ -222,9 +248,7 @@ class _Robot:
             return (f'<geom class="{self.col}" type="capsule" fromto="{_v(*a, *b)}" size="{rad}" '
                     f'mass="{mass}" rgba="{color}"/>')
 
-        lim = {}
-        for name, spec in (self.cfg.get("servos.joints") or {}).items():
-            lim[name] = (math.radians(spec.get("min_angle", -90)), math.radians(spec.get("max_angle", 90)))
+        lim = self._limits()
         xml = f'<body name="arm_base_link" pos="{_v(*ARM_MOUNT)}">{link_geoms("arm_base_link")}'
         closes = ["</body>"]
         for name, _parent, child, xyz, rpy, axis in ARM_JOINTS:
@@ -235,18 +259,38 @@ class _Robot:
             closes.append("</body>")
         return xml + "".join(reversed(closes))
 
-    def body(self, x: float, y: float, yaw: float) -> str:
-        bpos, bsize = _box(BASE_BOX)
+    def _limits(self) -> dict[str, tuple[float, float]]:
+        lim = {}
+        for name, spec in (self.cfg.get("servos.joints") or {}).items():
+            lim[name] = (math.radians(spec.get("min_angle", -90)), math.radians(spec.get("max_angle", 90)))
+        return lim
+
+    def hands(self) -> str:
+        lim = self._limits()
+        xml = f'<body name="hand_mount_link">{self.visual("hand_mount_link", "mount")}'
+        hx, hy, hz = HAND_BOX
+        for joint, link, pos, sign in HAND_JOINTS:
+            lo, hi = lim.get(joint, (-math.pi / 2, math.pi / 2))
+            xml += f"""
+        <body name="{link}" pos="{_v(*pos)}">
+          <joint name="{joint}" type="hinge" axis="0 -1 0" range="{_v(lo, hi)}" damping="0.005" armature="0.0003"/>
+          <geom class="{self.col}" type="box" pos="{_v(0, sign * hy, 0)}" size="{_v(hx, hy, hz)}"
+                mass="{MASS['hand']}" rgba="{COLORS['accent']}"/>
+          {self.visual(link, 'accent')}
+        </body>"""
+        return xml + "</body>"
+
+    def breadboard(self) -> str:
+        pos, size = _box(BREADBOARD_BOX)
+        return (f'<body name="breadboard_link">{self.visual("breadboard_link", "mount")}'
+                + ("" if self.meshes else
+                   f'<geom class="phone_frame" type="box" pos="{pos}" size="{size}" rgba="{COLORS["mount"]}"/>')
+                + "</body>")
+
+    def chassis(self) -> str:
         cpos, csize = _box(CHASSIS_BOX)
         cx, cy, cz, cr = CASTER
-        lx, ly = (self.cfg.get("sim.laser_offset") or [0.0, 0.0])[:2]
-        z0 = -GROUND_Z + 0.002
         return f"""
-    <body name="base_link" pos="{_v(x, y, z0)}" euler="0 0 {yaw:.6g}">
-      <freejoint name="root"/>
-      <geom class="{self.col}" type="box" pos="{bpos}" size="{bsize}" mass="{MASS['base_link']}" rgba="{COLORS['base']}"/>
-      {self.visual('base_link', 'base')}
-      <site name="laser" pos="{_v(lx, ly, LASER_Z)}" size="0.012" rgba="0.1 0.6 1 1"/>
       <body name="chassis_link">
         <geom class="{self.col}" type="box" pos="{cpos}" size="{csize}" mass="{MASS['chassis']}" rgba="{COLORS['mount']}"/>
         <geom class="{self.col}" type="sphere" pos="{_v(cx, cy, cz)}" size="{cr}" mass="{MASS['caster']}"
@@ -254,12 +298,76 @@ class _Robot:
         {self.visual('chassis_link', 'mount')}
         {self.wheel('left', 1)}
         {self.wheel('right', -1)}
+      </body>"""
+
+    def base_contents(self) -> str:
+        m = self.model
+        bpos, bsize = _box(BASE_BOX)
+        lx, ly = (self.cfg.get("sim.laser_offset") or [0.0, 0.0])[:2]
+        parts = [
+            f'<geom class="{self.col}" type="box" pos="{bpos}" size="{bsize}" mass="{MASS["base_link"]}" rgba="{COLORS["base"]}"/>',
+            self.visual("base_link", "base"),
+        ]
+        if m.lidar:
+            parts.append(f'<site name="laser" pos="{_v(lx, ly, LASER_Z)}" size="0.012" rgba="0.1 0.6 1 1"/>')
+        if m.mobile:
+            parts.append(self.chassis())
+        if m.arm:
+            parts.append(self.arm())
+        if m.hand:
+            parts.append(self.hands())
+        if m.breadboard:
+            parts.append(self.breadboard())
+        parts.append(self.phone())
+        return "\n      ".join(parts)
+
+    def body(self, x: float, y: float, yaw: float) -> str:
+        m = self.model
+        if not m.base:
+            return self.phone_alone(x, y, yaw)
+        if m.mobile:
+            # on its wheels: free to drive, fall and be pushed
+            z0 = -GROUND_Z + 0.002
+            return f"""
+    <body name="base_link" pos="{_v(x, y, z0)}" euler="0 0 {yaw:.6g}">
+      <freejoint name="root"/>
+      {self.base_contents()}
+    </body>"""
+        if m.mount == "neck":
+            lo, hi = self._limits().get("head_pan", (-math.pi / 2, math.pi / 2))
+            sr, sh = PAN_STAND
+            pr, ph = PAN_PLATE
+            stand = "" if self.meshes else (
+                f'<geom class="phone_frame" type="cylinder" pos="0 0 {sh / 2:.6g}" size="{_v(sr, sh / 2)}" rgba="{COLORS["mount"]}"/>')
+            plate = f'<geom class="{self.col}" type="cylinder" pos="0 0 {ph / 2:.6g}" size="{_v(pr, ph / 2)}" mass="{MASS["pan_link"]}" rgba="{COLORS["part"]}"/>'
+            return f"""
+    <body name="pan_stand_link" pos="{_v(x, y, 0)}" euler="0 0 {yaw:.6g}">
+      {stand}{self.visual('pan_stand_link', 'mount')}
+      <body name="pan_link" pos="0 0 {PAN_JOINT_Z}">
+        <joint name="head_pan" type="hinge" axis="0 0 1" range="{_v(lo, hi)}" damping="0.02" armature="0.002"/>
+        {plate}{self.visual('pan_link', 'part')}
+        <body name="base_link" pos="0 0 {PAN_TO_BASE_Z}">
+          {self.base_contents()}
+        </body>
       </body>
-      {self.arm()}
-      {self.phone()}
+    </body>"""
+        # standing on the floor (fixed): the brain-only steps, hand, arm
+        return f"""
+    <body name="base_link" pos="{_v(x, y, 0)}" euler="0 0 {yaw:.6g}">
+      {self.base_contents()}
     </body>"""
 
-    def phone(self) -> str:
+    def phone_alone(self, x: float, y: float, yaw: float) -> str:
+        """The phone by itself on a small stand (no base); base_link is the floor frame."""
+        t, _length, h = PHONE_SIZE
+        stand = f'<geom class="phone_frame" type="box" pos="{_v(-0.012, 0, 0.012)}" size="0.012 0.04 0.012" rgba="{COLORS["dark"]}"/>'
+        return f"""
+    <body name="base_link" pos="{_v(x, y, 0)}" euler="0 0 {yaw:.6g}">
+      {stand}
+      {self.phone((t / 2, 0.0, h / 2 + 0.004))}
+    </body>"""
+
+    def phone(self, pos: tuple[float, float, float] | None = None) -> str:
         if not self.cfg.get("phone.enabled", True):
             return ""
         t, length, h = PHONE_SIZE
@@ -270,7 +378,7 @@ class _Robot:
         hfov = math.radians(float(self.cfg.get("phone.camera.hfov_deg", 60.0)))
         fovy = math.degrees(2 * math.atan(math.tan(hfov / 2) * hh / w))
         return f"""
-      <body name="phone" pos="{_v(PHONE_BACK_X + t / 2, 0, PHONE_Z)}">
+      <body name="phone" pos="{_v(*(pos or (PHONE_BACK_X + t / 2, 0, PHONE_Z)))}">
         <geom class="{self.col}" type="box" size="{_v(t / 2, length / 2, h / 2)}" mass="{PHONE_MASS}" rgba="0.08 0.08 0.10 1"/>
         <geom class="phone_frame" type="box" size="{_v(t / 2, length / 2, h / 2)}" rgba="0.08 0.08 0.10 1"/>
         <geom name="phone_screen" class="visual" mesh="phone_screen" material="phone_screen" pos="{_v(t / 2 + 0.0003, 0, 0)}"/>
@@ -280,13 +388,35 @@ class _Robot:
       </body>"""
 
     def actuators(self, wheel_kv: float) -> str:
-        out = [f'<velocity name="{s}_wheel" joint="{s}_wheel_joint" kv="{wheel_kv:.6g}" '
-               f'forcerange="{-WHEEL_TORQUE} {WHEEL_TORQUE}"/>' for s in ("left", "right")]
+        out = []
+        if self.model.mobile:
+            out += [f'<velocity name="{s}_wheel" joint="{s}_wheel_joint" kv="{wheel_kv:.6g}" '
+                    f'forcerange="{-WHEEL_TORQUE} {WHEEL_TORQUE}"/>' for s in ("left", "right")]
         kp = float(self.cfg.get("sim.servo_kp", 1.5))
-        for name, *_ in ARM_JOINTS:
-            out.append(f'<position name="{name}" joint="{name}" kp="{kp:.6g}" '
-                       f'forcerange="{-SERVO_TORQUE} {SERVO_TORQUE}"/>')
+        for name in self.model.servos():
+            torque = PAN_TORQUE if name == "head_pan" else SERVO_TORQUE
+            gain = kp * (torque / SERVO_TORQUE)
+            out.append(f'<position name="{name}" joint="{name}" kp="{gain:.6g}" '
+                       f'forcerange="{-torque} {torque}"/>')
         return "\n    ".join(out)
+
+    def mesh_links(self) -> list[str]:
+        """Links of this model that have meshes."""
+        m = self.model
+        links = []
+        if m.base:
+            links.append("base_link")
+        if m.mobile:
+            links += ["chassis_link", "left_wheel_link", "right_wheel_link"]
+        if m.arm:
+            links += list(ARM_COLOR)
+        if m.hand:
+            links += ["hand_mount_link", "left_hand_link", "right_hand_link"]
+        if m.mount == "neck":
+            links += ["pan_stand_link", "pan_link"]
+        if m.breadboard:
+            links.append("breadboard_link")
+        return links
 
     def assets(self) -> str:
         out = []
@@ -301,7 +431,8 @@ class _Robot:
                        'texcoord="0 1  1 1  1 0  0 0  0.5 0.5" face="0 1 2  0 2 3  4 1 0  4 2 1  4 3 2  4 0 3"/>')
         if not self.meshes:
             return "\n    ".join(out)
-        for link, module in MESH_MODULE.items():
+        for link in self.mesh_links():
+            module = MESH_MODULE[link]
             out.append(f'<mesh name="{link}" file="{module}/visual/{link}.stl"/>')
             if link in ARM_COLOR:
                 out.append(f'<mesh name="{link}_col" file="{module}/collision/{link}.stl"/>')

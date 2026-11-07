@@ -38,7 +38,8 @@ import numpy as np
 
 from ..world import Pose2D, World
 from .base import Engine
-from .mujoco_model import ARM_JOINTS, build_mjcf, find_description
+from ..models import get_model
+from .mujoco_model import build_mjcf, find_description
 
 log = logging.getLogger(__name__)
 
@@ -62,13 +63,18 @@ class MujocoEngine(Engine):
         self._radius = cfg.get("dc.wheel_radius", 0.030)
 
         m = self.model
+        self.robot_model = get_model(cfg.get("sim.model"))
         self._base = m.body("base_link").id
-        self._laser = m.site("laser").id
-        self._root_qpos = m.jnt_qposadr[m.joint("root").id]
-        self._root_qvel = m.jnt_dofadr[m.joint("root").id]
-        self._wheel_qpos = [m.jnt_qposadr[m.joint(f"{s}_wheel_joint").id] for s in ("left", "right")]
-        self._wheel_act = [m.actuator(f"{s}_wheel").id for s in ("left", "right")]
-        self._arm_act = {name: m.actuator(name).id for name, *_ in ARM_JOINTS}
+        # parts a model may lack (see smabo_sim.models): no laser site without
+        # the lidar, no free joint / wheels unless on the TT-motor chassis
+        self._laser = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SITE, "laser")
+        root = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, "root")
+        self._root_qpos = m.jnt_qposadr[root] if root >= 0 else None
+        self._root_qvel = m.jnt_dofadr[root] if root >= 0 else None
+        mobile = self.robot_model.mobile
+        self._wheel_qpos = [m.jnt_qposadr[m.joint(f"{s}_wheel_joint").id] for s in ("left", "right")] if mobile else []
+        self._wheel_act = [m.actuator(f"{s}_wheel").id for s in ("left", "right")] if mobile else []
+        self._arm_act = {name: m.actuator(name).id for name in self.robot_model.servos()}
         self._arm_range = {name: tuple(m.jnt_range[m.joint(name).id]) for name in self._arm_act}
         self._sim_time_debt = 0.0
         self.has_phone = m.nsensor > 0 and mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_CAMERA, "phone_camera") >= 0
@@ -91,13 +97,16 @@ class MujocoEngine(Engine):
             mujoco.mj_resetData(self.model, self.data)
             q = self.data.qpos
             a = self._root_qpos
-            q[a:a + 3] = (pose.x, pose.y, self.model.body_pos[self._base][2])
-            q[a + 3:a + 7] = (math.cos(pose.yaw / 2), 0.0, 0.0, math.sin(pose.yaw / 2))
+            if a is not None:      # fixed models stay where the world file put them
+                q[a:a + 3] = (pose.x, pose.y, self.model.body_pos[self._base][2])
+                q[a + 3:a + 7] = (math.cos(pose.yaw / 2), 0.0, 0.0, math.sin(pose.yaw / 2))
             mujoco.mj_forward(self.model, self.data)
             self._wheel_last = [float(q[i]) for i in self._wheel_qpos]
             self._travel = [0.0, 0.0]
 
     def set_wheel_targets(self, left: float, right: float) -> None:
+        if not self._wheel_act:
+            return
         self.data.ctrl[self._wheel_act[0]] = left / self._radius
         self.data.ctrl[self._wheel_act[1]] = right / self._radius
 
@@ -130,6 +139,8 @@ class MujocoEngine(Engine):
                 d *= 1.0 + self._rng.normal(0.0, noise)
             self._travel[i] += d
         # "blocked": wheels turning but the chassis is not moving
+        if not self._wheel_act:
+            return
         wheel_speed = np.abs(self.data.ctrl[self._wheel_act]).max() * self._radius
         body_speed = float(np.linalg.norm(self.data.qvel[self._root_qvel:self._root_qvel + 2]))
         self.blocked = wheel_speed > 0.05 and body_speed < 0.2 * wheel_speed
@@ -147,6 +158,9 @@ class MujocoEngine(Engine):
     def scan(self, angles: np.ndarray, range_min: float, range_max: float) -> np.ndarray:
         angles = np.asarray(angles, dtype=float)
         n = len(angles)
+        if self._laser < 0:        # this model has no lidar
+            self.last_scan_points = np.zeros((0, 3))
+            return np.zeros(n)
         origin = self.data.site_xpos[self._laser].copy()
         R = self.data.site_xmat[self._laser].reshape(3, 3)
         local = np.stack([np.cos(angles), np.sin(angles), np.zeros(n)], axis=1)
@@ -248,6 +262,12 @@ class MujocoEngine(Engine):
                                     size, pts[i], eye, rgba)
             scn.ngeom += n
         return r.render().copy()
+
+    def close(self) -> None:
+        """Free the offscreen renderers (call from the thread that rendered)."""
+        for r in self._renderers.values():
+            r.close()
+        self._renderers.clear()
 
     def phone_imu(self) -> tuple[np.ndarray, np.ndarray]:
         """(accelerometer m/s², gyroscope rad/s) in the phone's device axes.

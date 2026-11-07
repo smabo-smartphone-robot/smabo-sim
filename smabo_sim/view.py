@@ -13,6 +13,8 @@ browser has the page open.
                                {"follow": bool}, {"preset": "default" | "top"},
                                or any camera field directly
     GET  /view/state         → robot pose (ground truth) for the overlay
+    GET  /view/models        → the roadmap models and the current one
+    POST /view/model {name}  → rebuild the robot as that model (smabo_sim/models.py)
 
 Config (``view.*``): ``width`` / ``height`` (default 960 × 600), ``fps``
 (default 15), ``jpeg_quality`` (default 80). Needs ``--engine mujoco``.
@@ -26,6 +28,8 @@ import math
 import time
 
 from aiohttp import web
+
+from .models import MODELS, get_model
 
 _DEFAULT = {"azimuth": -140.0, "elevation": -30.0, "distance": 1.2, "follow": True,
             "lookat": [0.0, 0.0, 0.0]}
@@ -82,8 +86,9 @@ def _jpeg(img, quality: int) -> bytes:
     return buf.getvalue()
 
 
-def add_view_routes(app: web.Application, engine, cfg, cors: dict) -> None:
-    has_view = hasattr(engine, "render_view")
+def add_view_routes(app: web.Application, get_engine, cfg, cors: dict, switch_model=None) -> None:
+    """``get_engine()`` returns the current engine (it is replaced when the
+    model changes); ``switch_model(name)`` does that change."""
     width = int(cfg.get("view.width", 960))
     height = int(cfg.get("view.height", 600))
     fps = max(float(cfg.get("view.fps", 15.0)), 0.5)
@@ -92,11 +97,15 @@ def add_view_routes(app: web.Application, engine, cfg, cors: dict) -> None:
     show = {"scan": True}
     cache = {"t": -1.0, "version": -1, "jpg": b""}
 
+    def has_view() -> bool:
+        return hasattr(get_engine(), "render_view")
+
     def frame() -> bytes:
         # one render per frame period (or camera change), shared by every viewer
         now = time.monotonic()
         if now - cache["t"] >= 1.0 / fps or cache["version"] != camera.version:
-            cache["jpg"] = _jpeg(engine.render_view(camera.state, width, height, show["scan"]), quality)
+            img = get_engine().render_view(camera.state, width, height, show["scan"])
+            cache["jpg"] = _jpeg(img, quality)
             cache["t"], cache["version"] = now, camera.version
         return cache["jpg"]
 
@@ -104,27 +113,27 @@ def add_view_routes(app: web.Application, engine, cfg, cors: dict) -> None:
         return web.json_response({"error": "the browser view needs --engine mujoco"}, status=404)
 
     def robot_xy() -> tuple[float, float]:
-        p = engine.pose()
+        p = get_engine().pose()
         return p.x, p.y
 
     async def page(_request):
         return web.Response(text=_PAGE, content_type="text/html")
 
     async def one(_request):
-        if not has_view:
+        if not has_view():
             return need_mujoco()
         return web.Response(body=frame(), content_type="image/jpeg",
                             headers={"Cache-Control": "no-store"})
 
     async def stream(request):
-        if not has_view:
+        if not has_view():
             return need_mujoco()
         resp = web.StreamResponse(headers={
             "Content-Type": "multipart/x-mixed-replace; boundary=frame",
             "Cache-Control": "no-store", **cors})
         await resp.prepare(request)
         try:
-            while True:
+            while has_view():
                 jpg = frame()
                 await resp.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
                                  + str(len(jpg)).encode() + b"\r\n\r\n" + jpg + b"\r\n")
@@ -148,10 +157,39 @@ def add_view_routes(app: web.Application, engine, cfg, cors: dict) -> None:
         return web.json_response({**camera.apply(req, robot_xy()), "scan": show["scan"]})
 
     async def state(_request):
+        engine = get_engine()
         p = engine.pose()
         return web.json_response({"x": p.x, "y": p.y, "yaw": math.degrees(p.yaw),
                                   "blocked": bool(getattr(engine, "blocked", False)),
-                                  "engine": "mujoco" if has_view else "kinematic"})
+                                  "engine": "mujoco" if has_view() else "kinematic",
+                                  "model": get_model(cfg.get("sim.model")).name})
+
+    def models_json() -> dict:
+        return {"current": get_model(cfg.get("sim.model")).name,
+                "switchable": switch_model is not None,
+                "models": [{"name": m.name, "label": m.label, "roadmap": list(m.roadmap),
+                            "parts": _parts(m), "modes": m.modes()} for m in MODELS.values()]}
+
+    async def models(_request):
+        return web.json_response(models_json())
+
+    async def post_model(request):
+        if switch_model is None:
+            return web.json_response({"error": "this simulator cannot switch models"}, status=409)
+        try:
+            req = await request.json()
+        except ValueError:
+            req = None
+        if not isinstance(req, dict) or not isinstance(req.get("name"), str):
+            return web.json_response({"error": 'give {"name": "<model>"}'}, status=400)
+        try:
+            switch_model(req["name"])
+        except ValueError as e:                  # unknown model
+            return web.json_response({"error": str(e)}, status=400)
+        except RuntimeError as e:                # e.g. --viewer is open
+            return web.json_response({"error": str(e)}, status=409)
+        cache["version"] = -1                    # next frame shows the new robot
+        return web.json_response(models_json())
 
     app.router.add_get("/view", page)
     app.router.add_get("/view/stream.mjpg", stream)
@@ -159,6 +197,28 @@ def add_view_routes(app: web.Application, engine, cfg, cors: dict) -> None:
     app.router.add_get("/view/camera", get_camera)
     app.router.add_post("/view/camera", post_camera)
     app.router.add_get("/view/state", state)
+    app.router.add_get("/view/models", models)
+    app.router.add_post("/view/model", post_model)
+
+
+def _parts(m) -> list[str]:
+    """What a model is built from, for the /view tooltip."""
+    out = ["スマホ"] if not m.base else ["ベース", "スマホ"]
+    if m.mobile:
+        out.append("TTモーター台車")
+    if m.encoder:
+        out.append("エンコーダ")
+    if m.lidar:
+        out.append("LiDAR")
+    if m.mount == "neck":
+        out.append("首振り台")
+    if m.hand:
+        out.append("ハンド")
+    if m.arm:
+        out.append("アーム")
+    if m.breadboard:
+        out.append("ブレッドボード")
+    return out
 
 
 _PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
@@ -179,9 +239,13 @@ button{padding:7px 12px;border-radius:6px;border:1px solid #333a48;background:#2
 button:hover{background:#2a2f3b}button:active{transform:translateY(1px)}
 button[aria-pressed=true]{border-color:#e07b39;color:#f3b48a}
 .hint{color:#7d8597;font-size:12px;margin-left:auto}
+.models{border-top:none;padding-bottom:0}.models::before{content:"モデル";color:#7d8597;font-size:12px;margin-right:4px}
+.models button{padding:5px 10px;font-size:13px}button:disabled{opacity:.5;cursor:default}
+#msg{color:#e8a0a0;font-size:12px}
 a{color:#8fb3ff}
 </style></head><body>
 <div id="stage"><img id="img" alt="simulation view"><div id="hud">…</div><div id="err"></div></div>
+<div class="bar models" id="models" role="group" aria-label="ロボットのモデル"></div>
 <div class="bar">
  <button id="follow" aria-pressed="true">ロボットを追う</button>
  <button data-preset="default">視点リセット</button>
@@ -227,6 +291,20 @@ fBtn.onclick=()=>cam({follow:fBtn.getAttribute('aria-pressed')!=='true'});
 sBtn.onclick=()=>cam({scan:sBtn.getAttribute('aria-pressed')!=='true'});
 document.querySelectorAll('[data-preset]').forEach(b=>b.onclick=()=>cam({preset:b.dataset.preset}));
 document.querySelectorAll('[data-zoom]').forEach(b=>b.onclick=()=>cam({zoom:+b.dataset.zoom}));
+const mBar=document.getElementById('models');
+function showModels(j){mBar.innerHTML='';
+ for(const m of j.models){const b=document.createElement('button');b.textContent=m.label;
+  b.title=m.parts.join(' + ')+(m.roadmap.length?'（ロードマップ: '+m.roadmap.join(', ')+'）':'');
+  b.setAttribute('aria-pressed',m.name===j.current);b.disabled=!j.switchable;
+  b.onclick=()=>pick(m.name);mBar.appendChild(b);}
+ const s=document.createElement('span');s.id='msg';mBar.appendChild(s);}
+async function pick(name){const msg=document.getElementById('msg');msg.textContent='組み立て中…';
+ mBar.querySelectorAll('button').forEach(b=>b.disabled=true);
+ try{const r=await fetch('/view/model',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
+  const j=await r.json();if(!r.ok){await loadModels();document.getElementById('msg').textContent=j.error;return;}
+  showModels(j);start();}catch(e){await loadModels();document.getElementById('msg').textContent='切り替えに失敗しました';}}
+async function loadModels(){try{showModels(await(await fetch('/view/models')).json());}catch(e){}}
+loadModels();
 setInterval(async()=>{try{const s=await(await fetch('/view/state')).json();
  hud.textContent=`x ${s.x.toFixed(2)} m  y ${s.y.toFixed(2)} m  yaw ${s.yaw.toFixed(0)}°`+(s.blocked?'  壁に接触':'');}catch(e){hud.textContent='sim に接続できません';}},300);
 </script></body></html>"""

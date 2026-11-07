@@ -54,11 +54,38 @@ smabo-web では、brain の接続先を `localhost:9090` にします。ESP32 �
 ```
 
 - MuJoCo が画面に出さずに描いた映像を MJPEG で流します。ページを開いている間だけ描画します（複数のブラウザで開いても描画は 1 回分）。
-- ドラッグで回転、Shift＋ドラッグか右ドラッグで移動、ホイールでズームです。「ロボットを追う」「真上」「視点リセット」「LiDAR点」のボタンがあります。視点はページを開いている全員で共有です。
+- ドラッグで回転、Shift＋ドラッグか右ドラッグで移動、ホイールでズームです。上段のボタンでロボットのモデルを切り替えられます（下の「ロードマップごとのモデル」）。「ロボットを追う」「真上」「視点リセット」「LiDAR点」のボタンがあります。視点はページを開いている全員で共有です。
 - 左上にロボットの実際の位置（シミュレータ内の真値）を出します。
 - 別の PC やスマホからは `http://<シミュレータのPCのIP>:8080/view` で見られます。
 - 解像度とフレームレートは `view.width` / `view.height`（既定 960×600）、`view.fps`（既定 15）、画質は `view.jpeg_quality`（既定 80）です。
 - `kinematic` エンジンでは描くものがないので、ページにその旨を表示します。
+
+### ロードマップごとのモデル
+
+ロボットの構成を、ロードマップの段階に合わせて選べます。起動時は `--model`、起動後は `/view` ページの「モデル」のボタン（または `POST /view/model {"name": "hand"}`）で切り替えます。
+
+```bash
+.venv/bin/python -m smabo_sim --engine mujoco --model hand
+```
+
+| モデル | ロードマップ | 構成 | ESP32 のモード |
+|---|---|---|---|
+| `phone` | （ベースの前） | スマホだけ（小さなスタンドに立てる） | なし |
+| `base` | brain・web・app・顔・スマホセンサ・音声処理・画像処理・ベースパーツ・esp32 | ベース＋スマホ（床に置く） | なし |
+| `hand` | ハンド | ベース＋両手（`left_hand` / `right_hand`）＋ブレッドボード | servos |
+| `neck` | 首振り | 首振り台（`head_pan`、MG996R）の上にベース＋ブレッドボード | servos |
+| `mobile` | 移動ロボット | TT モーター台車＋ブレッドボード、エンコーダなし | dc_drive |
+| `encmobile` | エンコーダ付 | 台車＋エンコーダ | encoder_drive |
+| `arm` | ロボットアーム・動作計画 | ベース＋アーム（`arm_joint_1`〜`4`） | servos |
+| `nav` | ナビゲーション・brain-ros | 台車＋エンコーダ＋LiDAR | encoder_drive, lidar |
+| `full` | （既定） | 台車＋エンコーダ＋LiDAR＋アーム | servos, encoder_drive, lidar |
+
+- 構成は smabo_description の xacro 引数（`arm` / `hand` / `breadboard` / `mount`）と同じ組み合わせで、関節名と軸も同じです。
+- モデルを選ぶと、`sim.model` と ESP32 の `modes` をその構成に合わせ、その構成にあるサーボだけを有効にします（実機でその段階に設定する内容と同じ）。brain には新しい config を送り、smabo-web には通知が出ます。
+- 台車のないモデルは床（首振りは台）に固定で、走行の指令では動きません。LiDAR のないモデルは `/scan` を出しません。
+- 切り替えるとロボットはスタート位置に戻ります。smabo-brain のオドメトリは続きから数えるので、ずれが気になるときは brain を起動し直してください。
+- `--viewer` を開いているときは切り替えられません（`--model` で起動し直すか、ブラウザの `/view` を使ってください）。
+- 一覧は `GET /view/models` で取れます。モデルの定義は `smabo_sim/models.py` です。
 
 ### スマホ（smabo-app の部分）
 
@@ -92,6 +119,7 @@ smabo-sim は ESP32 だけでなく、前面ホルダーに挿したスマホ（
 | `--world w.yaml` | ワールド（既定は同梱の `smabo_sim/worlds/room.yaml`） |
 | `--http-port` | REST API のポート（既定 8080。ESP32 は 80） |
 | `--engine` | `kinematic`（既定）または `mujoco` |
+| `--model` | ロボットの構成（ロードマップの段階、既定 `full`）。上の「ロードマップごとのモデル」を参照 |
 | `--viewer` | MuJoCo の 3D ビューアーを開く（`--engine mujoco` が必要）。ブラウザで見るだけなら不要（`/view`） |
 | `--no-phone` | スマホ（顔・IMU・GPS・カメラ・音声）を再現しない |
 | `--mute` | `/speech/say` を読み上げない（吹き出しだけ） |
@@ -103,6 +131,7 @@ smabo-sim は ESP32 だけでなく、前面ホルダーに挿したスマホ（
 |---|---|---|
 | ファームウェア | `firmware.py`, `robot.py`, `http_api.py`, `link.py` | ESP32 の処理を移植したもの。cmd_vel から左右の duty への変換（`dc.min_duty` の床上げ、0.5 秒で止まるタイムアウトを含む）、サーボの軌道追従と速度制限、`servos.behavior: "random"` のランダム動作（`random_motion.py`、`servos.random_groups` のグループごとに実機と同じ計算で動かす）、モードによる有効・無効、送信周期、REST API、再接続 |
 | エンジン | `engines/` | 実際に起きること。車輪の動き、エンコーダ、LiDAR。差し替え可能 |
+| モデル | `models.py` | ロードマップの段階ごとの構成（どの部品があるか、ESP32 のモード、有効なサーボ）。MJCF の組み立てとエンジンがこれを見る |
 | 表示 | `view.py` | ブラウザ用の 3D 表示（`/view`）。MuJoCo の画面外描画を MJPEG で配信し、視点はドラッグで操作 |
 | ワールド | `world.py`, `worlds/*.yaml` | 壁や障害物の輪郭。LiDAR の光線計算と、Nav2 用地図の書き出しに使う |
 

@@ -75,7 +75,9 @@ document.getElementById('mic').onclick=()=>speech({listen:true},'Listening… (s
 </script></body></html>"""
 
 
-def build_app(robot: SimRobot, phone=None) -> web.Application:
+def build_app(robot: SimRobot, phone=None, switch_model=None) -> web.Application:
+    """``switch_model(name)`` rebuilds the robot as another roadmap model
+    (``POST /view/model``); without it the model is fixed."""
     @web.middleware
     async def cors(request: web.Request, handler):
         if request.method == "OPTIONS":
@@ -116,7 +118,7 @@ def build_app(robot: SimRobot, phone=None) -> web.Application:
     app.router.add_get("/config", get_config)
     app.router.add_post("/config", post_config)
     app.router.add_post("/mode", post_mode)
-    add_view_routes(app, robot.engine, robot.cfg, _CORS)
+    add_view_routes(app, lambda: robot.engine, robot.cfg, _CORS, switch_model)
     if phone is not None:
         _add_phone_routes(app, phone)
     return app

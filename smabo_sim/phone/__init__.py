@@ -88,7 +88,8 @@ class SimPhone:
         self.utterances_sent = 0
         self.camera: CameraStreamer | None = None
         if cfg.get("phone.camera.stream", True) and getattr(engine, "has_phone", False):
-            cam = CameraStreamer(engine.render_phone_camera, self.publish,
+            cam = CameraStreamer(lambda: self.engine.render_phone_camera(),   # engine changes with the model
+                                 self.publish,
                                  fps=float(cfg.get("phone.camera.fps", 10.0)))
             if cam.available:
                 self.camera = cam

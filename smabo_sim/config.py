@@ -124,6 +124,8 @@ DEFAULTS: dict[str, Any] = {
     # ---- simulator only -------------------------------------------------
     "sim": {
         "engine": "kinematic",         # kinematic | mujoco
+        "model": "full",                # robot per roadmap step: phone | base | hand | neck | mobile |
+                                        # encmobile | arm | nav | full (smabo_sim/models.py)
         "world": "",                    # path to a world YAML ("" = bundled room)
         "physics_rate": 100.0,          # Hz
         "motor_time_constant": 0.08,    # s, first-order lag of each wheel's speed

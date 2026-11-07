@@ -3,6 +3,7 @@
     smabo-sim                         # run against ws://localhost:9090 (smabo-brain or smabo-brain-ros)
     smabo-sim run --host 192.168.1.20 --config my-esp32-config.json
     smabo-sim --engine mujoco --viewer   # MuJoCo physics + 3D viewer (macOS: run with mjpython)
+    smabo-sim --engine mujoco --model hand   # the robot at a roadmap step (see smabo_sim/models.py)
     smabo-sim export-map smabo_sim/worlds/room.yaml -o maps/sim_room
 """
 
@@ -20,6 +21,7 @@ from .config import Config
 from .engines import create_engine
 from .http_api import build_app
 from .link import BrainLink
+from .models import MODELS, RobotModel, get_model
 from .phone import SimPhone
 from .robot import SimRobot
 from .world import World
@@ -67,6 +69,22 @@ async def run(cfg: Config, world: World, viewer: bool = False) -> None:
             lambda: f"ws://{cfg.get('brain.host')}:{cfg.get('brain.port')}{phone.ws_path()}",
             phone.on_message, phone.on_brain_connect)
 
+    def switch_model(name: str) -> RobotModel:
+        """Rebuild the robot as another roadmap model (from /view or POST /view/model)."""
+        model = get_model(name)
+        if view is not None:
+            raise RuntimeError("the model cannot be switched while --viewer is open "
+                               "(restart with --model, or use the browser view)")
+        robot.apply_model(model)
+        old = robot.engine
+        new = create_engine(cfg.get("sim.engine", "kinematic"), world, cfg)
+        robot.engine = new
+        if phone is not None:
+            phone.engine = new
+        old.close()
+        log.info("model: %s (%s)", model.name, model.label)
+        return model
+
     def restart_links() -> None:
         link.restart()
         if phone_link is not None:
@@ -74,22 +92,22 @@ async def run(cfg: Config, world: World, viewer: bool = False) -> None:
 
     robot.on_brain_settings_changed = restart_links
 
-    runner = web.AppRunner(build_app(robot, phone), access_log=None)
+    runner = web.AppRunner(build_app(robot, phone, switch_model), access_log=None)
     await runner.setup()
     port = int(cfg.get("http.port", 8080))
     await web.TCPSite(runner, "0.0.0.0", port).start()
 
-    log.info("world '%s' (%d segments), engine '%s'", world.name, len(world.segments),
-             cfg.get("sim.engine"))
+    log.info("world '%s' (%d segments), engine '%s', model '%s'", world.name, len(world.segments),
+             cfg.get("sim.engine"), get_model(cfg.get("sim.model")).name)
     log.info("REST config API on http://localhost:%d  (smabo-web: ESP32 host = localhost:%d)", port, port)
     log.info("brain: %s", url())
-    if hasattr(engine, "render_view"):
+    if hasattr(robot.engine, "render_view"):
         log.info("3D view in the browser: http://localhost:%d/view", port)
     if phone is not None:
         log.info("phone (smabo-app part): screen + camera on http://localhost:%d/phone", port)
 
     def status(_dt: float) -> None:
-        p = engine.pose()
+        p = robot.engine.pose()
         l, r = robot.drive.duty(robot.clock())
         face = ""
         if phone is not None:
@@ -104,7 +122,7 @@ async def run(cfg: Config, world: World, viewer: bool = False) -> None:
         log.info("%s | pose x=%+.2f y=%+.2f yaw=%+4.0f° | duty L=%+.2f R=%+.2f%s%s",
                  "connected" if link.connected else "waiting for brain",
                  p.x, p.y, math.degrees(p.yaw), l, r,
-                 " | BLOCKED by wall" if getattr(engine, "blocked", False) else "", face)
+                 " | BLOCKED by wall" if getattr(robot.engine, "blocked", False) else "", face)
 
     jobs = [
         link.run(),
@@ -210,6 +228,8 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--port", type=int, help="brain port (default: 9090)")
     r.add_argument("--http-port", type=int, help="REST config API port (default: 8080)")
     r.add_argument("--engine", help="simulation engine: kinematic (default) or mujoco")
+    r.add_argument("--model", help="robot for a roadmap step: " + " | ".join(MODELS)
+                   + " (default: full; switchable at /view)")
     r.add_argument("--viewer", action="store_true", help="open the MuJoCo 3D viewer (needs --engine mujoco)")
     r.add_argument("--no-phone", action="store_true",
                    help="do not simulate the phone (e.g. a real smabo-app is connected)")
@@ -250,6 +270,13 @@ def main(argv: list[str] | None = None) -> int:
         overrides["sim"]["seed"] = args.seed
 
     cfg = Config(args.config, persist=args.save, overrides=overrides)
+    if args.model:
+        try:
+            model = get_model(args.model)
+        except ValueError as e:
+            print(f"smabo-sim: {e}", file=sys.stderr)
+            return 2
+        cfg.update(model.config_patch(cfg.get("servos.joints") or {}))
     world = World.load(cfg.get("sim.world") or None)
     try:
         asyncio.run(run(cfg, world, viewer=args.viewer))

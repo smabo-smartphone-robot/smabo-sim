@@ -11,6 +11,8 @@
   (``sim.lidar_noise``); misses read 0.0 like the LD06 driver.
 * Servos are ideal: joints sit at the commanded angle (the arm does not
   collide with anything in this engine).
+* Only models on the TT-motor chassis (``sim.model``, see ``smabo_sim.models``)
+  move, and only those with the LD06 see anything.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ import math
 
 import numpy as np
 
+from ..models import get_model
 from ..world import Pose2D, World
 from .base import Engine
 
@@ -32,6 +35,7 @@ class KinematicEngine(Engine):
         self._speed = [0.0, 0.0]
         self._travel = [0.0, 0.0]
         self._joints: dict[str, float] = {}
+        self.robot_model = get_model(cfg.get("sim.model"))
         self.blocked = False
         self.reset(world.start)
 
@@ -46,6 +50,8 @@ class KinematicEngine(Engine):
         self._joints.update(angles)
 
     def step(self, dt: float) -> None:
+        if not self.robot_model.mobile:
+            return
         tau = max(self.cfg.get("sim.motor_time_constant", 0.08), 1e-6)
         a = 1.0 - math.exp(-dt / tau)
         for i in (0, 1):
@@ -82,6 +88,8 @@ class KinematicEngine(Engine):
         return out
 
     def scan(self, angles: np.ndarray, range_min: float, range_max: float) -> np.ndarray:
+        if not self.robot_model.lidar:
+            return np.zeros(len(angles))
         p = self._pose
         lx, ly = (self.cfg.get("sim.laser_offset") or [0.0, 0.0])[:2]
         ox = p.x + math.cos(p.yaw) * lx - math.sin(p.yaw) * ly

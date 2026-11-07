@@ -29,6 +29,7 @@ import numpy as np
 from .config import Config
 from .engines import Engine
 from .firmware import DriveFirmware, ServoFirmware
+from .models import RobotModel
 from .protocol import BRAIN_PATH, ESP32_ADVERTISE, ESP32_PREFIX, ESP32_SUBSCRIBE
 from .random_motion import RandomMotion
 
@@ -229,6 +230,16 @@ class SimRobot:
             self.notice("smabo-sim: ignoring hardware settings (no effect in simulation): " + ", ".join(hw))
         if "brain" in patch and self.on_brain_settings_changed:
             self.on_brain_settings_changed()
+        self.sync_config_to_brain()
+
+    def apply_model(self, model: RobotModel) -> None:
+        """Switch to a roadmap ``model``: its modes and servos (the caller swaps
+        the engine). The brain gets the new config, smabo-web a notice."""
+        self.cfg.update(model.config_patch(self.cfg.get("servos.joints") or {}))
+        self.servos = ServoFirmware(self.cfg.get("servos.joints") or {})
+        self.drive.stop()
+        self._last_wheel_pub = self.clock()
+        self.notice(f"smabo-sim: model → {model.name} ({model.label})")
         self.sync_config_to_brain()
 
     def set_mode(self, partial: dict) -> None:
