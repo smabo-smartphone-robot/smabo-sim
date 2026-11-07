@@ -14,6 +14,7 @@ ESP32_ADVERTISE = (
     ("/esp32/joint_states", "sensor_msgs/msg/JointState"),
     ("/esp32/scan",         "sensor_msgs/msg/LaserScan"),
     ("/esp32/pong",         "std_msgs/msg/String"),
+    ("/esp32/config_url",   "std_msgs/msg/String"),
 )
 ESP32_SUBSCRIBE = (
     ("/cmd_vel",       "geometry_msgs/msg/Twist"),

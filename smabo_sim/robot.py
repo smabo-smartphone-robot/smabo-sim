@@ -18,6 +18,7 @@ milliseconds since boot.)
 from __future__ import annotations
 
 import json
+import socket
 import math
 import random
 import time
@@ -96,6 +97,29 @@ class SimRobot:
         for topic, typ in ESP32_SUBSCRIBE:
             self._frame({"op": "subscribe", "topic": topic, "type": typ})
         self.sync_config_to_brain()
+        self.publish_config_url()
+
+    def config_url(self) -> str:
+        """Our REST base URL as seen from the brain's side of the network.
+
+        With the brain on this machine that is ``localhost``; otherwise the
+        address of the interface that routes to the brain.
+        """
+        port = int(self.cfg.get("http.port", 8080))
+        brain = str(self.cfg.get("brain.host") or "localhost")
+        host = "localhost"
+        if brain not in ("localhost", "127.0.0.1", "::1"):
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                    s.connect((brain, 9))          # no packet is sent
+                    host = s.getsockname()[0]
+            except OSError:
+                pass
+        return f"http://{host}:{port}"
+
+    def publish_config_url(self) -> None:
+        """Tell smabo-web where the REST config API is (on connect and every 5 s)."""
+        self.publish("/config_url", {"data": self.config_url()})
 
     def sync_config_to_brain(self) -> None:
         """Publish the config (minus wifi) on /esp32/config for smabo-brain's odometry."""

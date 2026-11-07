@@ -111,6 +111,7 @@ async def run(cfg: Config, world: World, viewer: bool = False) -> None:
         _every(1.0 / max(cfg.get("servos.joint_states_rate", 20.0), 1e-3), lambda _dt: robot.publish_joint_states()),
         _every(1.0 / max(cfg.get("sim.lidar_rate", 10.0), 1e-3), lambda _dt: robot.publish_scan()),
         _every(2.0, status),
+        _every(5.0, lambda _dt: robot.publish_config_url()),
     ]
     if phone is not None:
         jobs += [
