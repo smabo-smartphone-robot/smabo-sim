@@ -62,6 +62,9 @@ def local_url(cfg, port: int) -> str:
             pass
     return f"http://{host}:{port}"
 
+
+WIFI_PASSWORD_MASK = "****"   # GET /config never returns the Wi-Fi password
+
 class SimRobot:
     """Owns firmware + engine; produces outbound frames through ``send``.
 
@@ -229,10 +232,21 @@ class SimRobot:
     def config_json(self) -> dict:
         """What the ESP32's REST /config holds: no simulator or phone keys
         (the phone's settings are on its own REST /config, phone/settings.py)."""
-        return {k: v for k, v in self.cfg.data.items() if k not in SIM_ONLY_KEYS}
+        data = {k: v for k, v in self.cfg.data.items() if k not in SIM_ONLY_KEYS}
+        wifi = data.get("wifi")
+        if isinstance(wifi, dict) and wifi.get("password"):
+            data["wifi"] = {**wifi, "password": WIFI_PASSWORD_MASK}   # write-only, like the board
+        return data
 
     def set_config(self, patch: dict) -> None:
         patch = dict(patch or {})
+        wifi = patch.get("wifi")
+        if isinstance(wifi, dict) and wifi.get("password") == WIFI_PASSWORD_MASK:
+            wifi = {k: v for k, v in wifi.items() if k != "password"}   # sent back unchanged
+            if wifi:
+                patch["wifi"] = wifi
+            else:
+                del patch["wifi"]
         sim_only = [k for k in SIM_ONLY_KEYS if patch.pop(k, None) is not None]
         if sim_only:
             self.notice("smabo-sim: not ESP32 settings, ignored: " + ", ".join(sim_only)

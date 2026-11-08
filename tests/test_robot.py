@@ -149,3 +149,17 @@ def test_set_config_rebuilds_servos_keeping_position():
     robot.set_config({"servos": {"joints": {"head_pan": {"max_speed": 30}}}})
     assert math.degrees(robot.servos.state()["head_pan"]) == pytest.approx(40.0)
     assert robot.cfg.get("servos.joints.head_pan.max_speed") == 30
+
+
+def test_rest_config_masks_wifi_password_and_keeps_it_on_echo():
+    robot, _, _ = make()
+    robot.cfg.update({"wifi": {"ssid": "home", "password": "secret"}})
+    assert robot.config_json()["wifi"] == {**robot.cfg.data["wifi"], "password": "****"}
+    # sending the masked settings back must not overwrite the real password
+    robot.set_config({"wifi": {"ssid": "home2", "password": "****"}})
+    assert robot.cfg.data["wifi"]["password"] == "secret"
+    assert robot.cfg.data["wifi"]["ssid"] == "home2"
+    robot.set_config({"wifi": {"password": "****"}})
+    assert robot.cfg.data["wifi"]["password"] == "secret"
+    robot.set_config({"wifi": {"password": "new"}})
+    assert robot.cfg.data["wifi"]["password"] == "new"

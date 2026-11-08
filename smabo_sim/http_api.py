@@ -4,7 +4,7 @@
 ``smabo-esp32/http_server.py`` and nothing else, on ``http.port`` (80 like the
 ESP32; 8080 where 80 can't be opened):
 
-    GET  /config           → full live config (JSON)
+    GET  /config           → full live config (JSON, wifi.password shown as "****")
     POST /config  {patch}  → deep-merge a config patch
     POST /mode    {modes}  → enable/disable subsystems
 
