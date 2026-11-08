@@ -13,7 +13,9 @@ to its REST ``/config`` (open while the device is not paired), or with
 ``--invite`` / ``--phone-invite`` on the command line.
 
 The simulator keeps the token in ``~/.smabo/sim/<esp32|app>.json`` (the board
-keeps it in config.json, the app in its preferences).
+keeps it in config.json, the app in its preferences). When the brain says it
+no longer knows the token (the device was removed in smabo-web, or the brain
+was reset), the device forgets it and its REST API takes invites again.
 """
 
 from __future__ import annotations
@@ -96,9 +98,16 @@ class Credentials:
                 log.warning("%s: the brain refused the invite code (%s). Get a new one in "
                             "smabo-web → Devices", self.role, reason)
         elif not ok:
-            if self.token:
-                log.warning("%s: the brain does not know this device's token (%s). "
-                            "Pair it again from smabo-web → Devices", self.role, reason)
+            if self.token and reason == "unauthorized":
+                # Removed from the brain (or the brain was reset): forget the
+                # pairing so the REST API takes a new invite again.
+                log.warning("%s: the brain no longer knows this device; it is unpaired now. "
+                            "Pair it again from smabo-web → Devices", self.role)
+                self.token = ""
+                self.relay_key_sha256 = ""
+                self._save()
+            elif self.token:
+                log.warning("%s: the brain refused this device's token (%s)", self.role, reason)
             else:
                 log.warning("%s: the brain needs pairing. Get an invite code in smabo-web → Devices "
                             "and post {\"brain\": {\"invite\": CODE}} to this device's /config "

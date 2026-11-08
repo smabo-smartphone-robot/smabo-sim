@@ -167,7 +167,7 @@ smabo-brain はペアリングしたクライアントだけを受け付けま�
 
 1. smabo-web の「Devices」で「Add ESP32」「Add phone」を押し、招待コードを出す
 2. `--invite ABCD-EFGH --phone-invite WXYZ-2345` を付けて起動する。起動中なら、それぞれの REST に `POST /config {"brain": {"invite": "ABCD-EFGH"}}` を送ってもよい（smabo-web はペアリング前の機器にはこれを直接送る）
-3. token は `~/.smabo/sim/esp32.json`・`app.json` に保存され、次からは自動でつながる
+3. token は `~/.smabo/sim/esp32.json`・`app.json` に保存され、次からは自動でつながる。smabo-web で外す（または brain を `--reset-pairing` で初期化する）と、次の接続で brain に断られた時点で token を捨て、REST がまた招待コードを受け付ける
 
 ペアリング後の REST（80・8081）は、brain が付ける中継用の鍵（`X-Smabo-Relay-Key`）のない要求を 401 で断り、CORS も返しません。smabo-web の設定画面は brain の `/devices/…` を通ります。シミュレータだけの画面（8090 の `/view`・`/phone`）は今までどおりです。
 

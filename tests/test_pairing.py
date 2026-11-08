@@ -32,6 +32,15 @@ def test_credentials_pair_save_and_reload(tmp_path):
     assert not again.relay_allowed(None)
 
 
+def test_a_removed_device_unlocks_itself(tmp_path):
+    c = Credentials("esp32", "smabo", tmp_path / "esp32.json")
+    c.handle_reply({"op": "pair", "ok": True, "token": "tok", "relay_key": "key"})
+    assert c.locked
+    assert c.handle_reply({"op": "auth", "ok": False, "reason": "unauthorized"}) is False
+    assert not c.locked and not c.paired and c.relay_allowed(None)
+    assert not Credentials("esp32", "smabo", tmp_path / "esp32.json").paired
+
+
 def test_refused_invite_is_dropped(tmp_path):
     c = Credentials("app", "phone", tmp_path / "app.json")
     c.set_invite("X")
