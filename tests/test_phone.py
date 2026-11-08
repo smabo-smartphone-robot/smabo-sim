@@ -91,7 +91,9 @@ def test_phone_subscribes_like_the_app_and_handles_topics():
     assert {"op": "advertise", "topic": "/app/imu/data", "type": "sensor_msgs/msg/Imu"} in ops
     assert {"op": "advertise", "topic": "/app/gps/fix", "type": "sensor_msgs/msg/NavSatFix"} in ops
     assert {o["topic"] for o in ops if o["op"] == "subscribe"} == {
-        "/expression", "/look_at", "/speech/say", "/webrtc/answer"}
+        "/expression", "/look_at", "/speech/say", "/webrtc/answer", "/brain/info"}
+    hello = [o for o in ops if o.get("topic") == "/app/hello" and o["op"] == "publish"]
+    assert json.loads(hello[0]["msg"]["data"])["protocol"] == 1
     phone.on_message(json.dumps({"op": "publish", "topic": "/expression", "msg": {"data": " angry "}}))
     phone.on_message(json.dumps({"op": "publish", "topic": "/look_at", "msg": {
         "header": {}, "pose": {"position": {"x": 1.0, "y": 0.5, "z": 0.0}}}}))

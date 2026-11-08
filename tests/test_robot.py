@@ -163,3 +163,17 @@ def test_rest_config_masks_wifi_password_and_keeps_it_on_echo():
     assert robot.cfg.data["wifi"]["password"] == "secret"
     robot.set_config({"wifi": {"password": "new"}})
     assert robot.cfg.data["wifi"]["password"] == "new"
+
+
+def test_hello_on_connect_and_warning_on_brain_protocol_mismatch():
+    robot, out, _ = make()
+    robot.on_brain_connect()
+    hello = [f for f in out if f.get("topic") == "/esp32/hello" and f["op"] == "publish"]
+    assert json.loads(hello[0]["msg"]["data"])["protocol"] == 1
+    out.clear()
+    publish(robot, "/brain/info", {"data": json.dumps({"protocol": 1, "brain": "smabo-brain"})})
+    assert not [f for f in out if f["op"] == "notice"]
+    publish(robot, "/brain/info", {"data": json.dumps({"protocol": 2, "brain": "smabo-brain"})})
+    publish(robot, "/brain/info", {"data": json.dumps({"protocol": 2, "brain": "smabo-brain"})})
+    notes = [f for f in out if f["op"] == "notice"]
+    assert len(notes) == 1 and "protocol mismatch" in notes[0]["message"]   # warned once

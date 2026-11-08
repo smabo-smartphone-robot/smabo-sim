@@ -22,17 +22,22 @@ import socket
 import math
 import random
 import time
+import logging
 from typing import Callable
 
 import numpy as np
 
+from . import __version__
 from .config import Config
 from .engines import Engine
 from .firmware import DriveFirmware, ServoFirmware
 from .models import RobotModel
-from .protocol import BRAIN_PATH, ESP32_ADVERTISE, ESP32_PREFIX, ESP32_SUBSCRIBE
+from .protocol import (BRAIN_PATH, ESP32_ADVERTISE, ESP32_PREFIX, ESP32_SUBSCRIBE,
+                       brain_info_warning, hello_msg)
 from .random_motion import RandomMotion
 
+
+log = logging.getLogger(__name__)
 
 
 def ros_stamp(t: float) -> dict:
@@ -63,6 +68,7 @@ def local_url(cfg, port: int) -> str:
     return f"http://{host}:{port}"
 
 
+SIM_ESP32_CLIENT = "smabo-sim (esp32)"
 WIFI_PASSWORD_MASK = "****"   # GET /config never returns the Wi-Fi password
 
 class SimRobot:
@@ -93,6 +99,7 @@ class SimRobot:
         self.random_motion = RandomMotion(cfg, random.Random(cfg.get("sim.seed")))
         self._last_wheel_pub = clock()
         self.on_brain_settings_changed: Callable[[], None] | None = None
+        self._protocol_warning: str | None = None
 
     # ------------------------------------------------------------------ #
     # outbound helpers
@@ -125,6 +132,7 @@ class SimRobot:
             self._frame({"op": "subscribe", "topic": topic, "type": typ})
         self.sync_config_to_brain()
         self.publish_config_url()
+        self.publish("/hello", hello_msg(SIM_ESP32_CLIENT, __version__))
 
     def config_url(self) -> str:
         """Our REST base URL as seen from the brain's side of the network.
@@ -166,6 +174,12 @@ class SimRobot:
                 self.servos.load_trajectory(msg.get("joint_names") or [], msg.get("points") or [], now)
         elif topic == "/ping":
             self.publish("/pong", {"data": (msg or {}).get("data", "")})
+        elif topic == "/brain/info":
+            warning = brain_info_warning(msg, SIM_ESP32_CLIENT)
+            if warning and warning != self._protocol_warning:
+                log.warning(warning)
+                self.notice(warning)
+            self._protocol_warning = warning
 
     # ------------------------------------------------------------------ #
     # periodic work (called by the runner)

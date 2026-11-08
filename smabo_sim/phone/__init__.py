@@ -38,7 +38,8 @@ from typing import Callable
 
 import numpy as np
 
-from ..protocol import APP_ADVERTISE, APP_PREFIX, APP_SUBSCRIBE, BRAIN_PATH
+from .. import __version__
+from ..protocol import APP_ADVERTISE, APP_PREFIX, APP_SUBSCRIBE, BRAIN_PATH, brain_info_warning, hello_msg
 from ..world import Pose2D
 from . import voice
 from .face import Face
@@ -46,6 +47,8 @@ from .tts import Speaker, synth_wav
 from .webrtc import CameraStreamer
 
 log = logging.getLogger(__name__)
+
+SIM_APP_CLIENT = "smabo-sim (app)"
 
 GRAVITY = 9.81
 EARTH_RADIUS = 6378137.0     # m, WGS-84 equatorial (local flat-earth approximation)
@@ -90,6 +93,7 @@ class SimPhone:
         self.config_url = ""                  # our REST /config, announced on /app/phone/config_url
         self.settings_json: Callable[[], dict] | None = None   # set by PhoneSettings' owner
         self._last_said = ""
+        self._protocol_warning: str | None = None
         if getattr(engine, "has_phone", False):
             cam = CameraStreamer(lambda: self.engine.render_phone_camera(),   # engine changes with the model
                                  self.publish,
@@ -116,6 +120,7 @@ class SimPhone:
             asyncio.ensure_future(self.camera.start())
         self.publish_config_url()
         self.publish_settings()
+        self.publish("/hello", hello_msg(SIM_APP_CLIENT, __version__))
 
     # ------------------------------------------------------------------ #
     # settings (REST /config on the phone, like smabo-app)
@@ -152,6 +157,12 @@ class SimPhone:
             self.handle(data.get("topic"), data.get("msg") or {})
 
     def handle(self, topic: str | None, msg: dict) -> None:
+        if topic == "/brain/info":
+            warning = brain_info_warning(msg, SIM_APP_CLIENT)
+            if warning and warning != self._protocol_warning:
+                log.warning(warning)
+            self._protocol_warning = warning
+            return
         if topic == "/expression":
             name = msg.get("data")
             if isinstance(name, str) and name.strip():
