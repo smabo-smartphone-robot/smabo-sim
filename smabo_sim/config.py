@@ -43,6 +43,7 @@ def _servo(channel, lo, hi, init=0, max_speed=120, enabled=True, invert=False):
 
 DEFAULTS: dict[str, Any] = {
     "wifi": {"ssid": "your-ssid", "password": "your-password", "hostname": "smabo-sim"},
+    "improv": {"enabled": True, "name": ""},  # BLE Wi-Fi setup; the sim has no BLE
     "brain": {
         "host": "localhost",
         "port": 9090,
