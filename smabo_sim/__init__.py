@@ -17,4 +17,4 @@ Layers (see README):
   world     — walls / obstacles from a YAML file; also exported as a Nav2 map.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
