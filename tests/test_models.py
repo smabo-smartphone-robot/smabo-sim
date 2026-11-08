@@ -9,7 +9,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from smabo_sim.config import Config
 from smabo_sim.engines import create_engine
-from smabo_sim.http_api import build_app
+from smabo_sim.http_api import build_sim_app
 from smabo_sim.models import MODELS, get_model
 from smabo_sim.robot import SimRobot
 from smabo_sim.world import World
@@ -101,7 +101,8 @@ def test_apply_model_updates_config_and_tells_the_brain():
     frames = [json.loads(s) for s in sent]
     assert any(f.get("op") == "notice" and "hand" in f["message"] for f in frames)
     snap = next(json.loads(f["msg"]["data"]) for f in frames if f.get("topic") == "/esp32/config")
-    assert snap["sim"]["model"] == "hand" and snap["modes"]["servos"] is True
+    assert "sim" not in snap and snap["modes"]["servos"] is True    # board keys only
+    assert cfg.get("sim.model") == "hand"
     assert snap["modes"]["encoder_drive"] is False
 
 
@@ -118,7 +119,7 @@ def test_view_model_routes():
     robot = SimRobot(cfg, create_engine("kinematic", World.load(), cfg), lambda s: None)
 
     async def go():
-        async with TestClient(TestServer(build_app(robot, None, switch))) as client:
+        async with TestClient(TestServer(build_sim_app(robot, None, switch))) as client:
             j = await (await client.get("/view/models")).json()
             assert j["current"] == "full" and j["switchable"]
             assert [m["name"] for m in j["models"]] == list(MODELS)
@@ -126,7 +127,7 @@ def test_view_model_routes():
             assert r.status == 200 and (await r.json())["current"] == "neck"
             r = await client.post("/view/model", json={"name": "tank"})
             assert r.status == 400
-        async with TestClient(TestServer(build_app(robot))) as client:
+        async with TestClient(TestServer(build_sim_app(robot))) as client:
             r = await client.post("/view/model", json={"name": "arm"})
             assert r.status == 409
     asyncio.run(go())

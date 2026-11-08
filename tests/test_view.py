@@ -8,7 +8,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from smabo_sim.config import Config
 from smabo_sim.engines import create_engine
-from smabo_sim.http_api import build_app
+from smabo_sim.http_api import build_sim_app
 from smabo_sim.robot import SimRobot
 from smabo_sim.view import ViewCamera
 from smabo_sim.world import World
@@ -36,7 +36,7 @@ def with_client(engine_name, fn):
     async def go():
         cfg = Config(overrides={"sim": {"description": "none"}, "view": {"width": 160, "height": 100}})
         robot = SimRobot(cfg, create_engine(engine_name, World.load(), cfg), lambda s: None)
-        async with TestClient(TestServer(build_app(robot))) as client:
+        async with TestClient(TestServer(build_sim_app(robot))) as client:
             await fn(client)
     asyncio.run(go())
 

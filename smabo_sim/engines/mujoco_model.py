@@ -84,8 +84,11 @@ PAN_TO_BASE_Z = 0.015                     # base_link above pan_link
 PAN_STAND = (0.057, 0.0508)               # fallback cylinder radius, height
 PAN_PLATE = (0.055, 0.018)
 BREADBOARD_BOX = ((-0.0725, -0.047), (-0.05, 0.05), (0.0005, 0.0978))
-COLORS = {"base": "0.60 0.64 0.70 1", "part": "0.95 0.95 0.95 1", "mount": "0.80 0.82 0.86 1",
-          "accent": "0.98 0.57 0.24 1", "dark": "0.15 0.15 0.18 1"}
+# The robot is white; only the tyres ("dark") and the phone (its own black body
+# and screen) have colour. The part names stay so the roles are visible here.
+WHITE = "0.94 0.94 0.93 1"
+COLORS = {"base": WHITE, "part": WHITE, "mount": WHITE, "accent": WHITE,
+          "dark": "0.15 0.15 0.18 1"}
 ARM_COLOR = {"arm_base_link": "mount", "arm_link_1": "part", "arm_link_2": "part",
              "arm_link_3": "part", "arm_link_4": "accent"}
 MESH_MODULE = {"base_link": "smabo_base", "chassis_link": "smabo_tt_motor",
@@ -340,7 +343,7 @@ class _Robot:
       <body name="chassis_link">
         <geom class="{self.col}" type="box" pos="{cpos}" size="{csize}" mass="{MASS['chassis']}" rgba="{COLORS['mount']}"/>
         <geom class="{self.col}" type="sphere" pos="{_v(cx, cy, cz)}" size="{cr}" mass="{MASS['caster']}"
-              condim="1" priority="1" rgba="0.7 0.7 0.7 1"/>
+              condim="1" priority="1" rgba="{WHITE}"/>
         {self.visual('chassis_link', 'mount')}
         {self.wheel('left', 1)}
         {self.wheel('right', -1)}
@@ -355,7 +358,7 @@ class _Robot:
             self.visual("base_link", "base"),
         ]
         if m.lidar:
-            parts.append(f'<site name="laser" pos="{_v(lx, ly, LASER_Z)}" size="0.012" rgba="0.1 0.6 1 1"/>')
+            parts.append(f'<site name="laser" pos="{_v(lx, ly, LASER_Z)}" size="0.012" rgba="{WHITE}"/>')
         if m.mobile:
             parts.append(self.chassis())
         if m.arm:
@@ -406,7 +409,7 @@ class _Robot:
     def phone_alone(self, x: float, y: float, yaw: float) -> str:
         """The phone by itself on a small stand (no base); base_link is the floor frame."""
         t, _length, h = PHONE_SIZE
-        stand = f'<geom class="phone_frame" type="box" pos="{_v(-0.012, 0, 0.012)}" size="0.012 0.04 0.012" rgba="{COLORS["dark"]}"/>'
+        stand = f'<geom class="phone_frame" type="box" pos="{_v(-0.012, 0, 0.012)}" size="0.012 0.04 0.012" rgba="{WHITE}"/>'
         return f"""
     <body name="base_link" pos="{_v(x, y, 0)}" euler="0 0 {yaw:.6g}">
       {stand}

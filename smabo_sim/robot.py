@@ -40,6 +40,28 @@ def ros_stamp(t: float) -> dict:
     return {"sec": sec, "nanosec": int((t - sec) * 1e9)}
 
 
+
+# simulator-only keys: not on the ESP32's REST /config nor in /esp32/config
+SIM_ONLY_KEYS = ("phone", "sim", "view")
+
+
+def local_url(cfg, port: int) -> str:
+    """``http://<this machine>:<port>`` as seen from the brain's side of the network.
+
+    With the brain on this machine that is ``localhost``; otherwise the
+    address of the interface that routes to the brain.
+    """
+    brain = str(cfg.get("brain.host") or "localhost")
+    host = "localhost"
+    if brain not in ("localhost", "127.0.0.1", "::1"):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect((brain, 9))          # no packet is sent
+                host = s.getsockname()[0]
+        except OSError:
+            pass
+    return f"http://{host}:{port}"
+
 class SimRobot:
     """Owns firmware + engine; produces outbound frames through ``send``.
 
@@ -60,6 +82,7 @@ class SimRobot:
         self.cfg = cfg
         self.engine = engine
         self.send = send
+        self.http_port: int | None = None    # the REST port actually opened (when not http.port)
         self.clock = clock
         self.wall = wall
         self.drive = DriveFirmware(cfg)
@@ -106,17 +129,7 @@ class SimRobot:
         With the brain on this machine that is ``localhost``; otherwise the
         address of the interface that routes to the brain.
         """
-        port = int(self.cfg.get("http.port", 8080))
-        brain = str(self.cfg.get("brain.host") or "localhost")
-        host = "localhost"
-        if brain not in ("localhost", "127.0.0.1", "::1"):
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                    s.connect((brain, 9))          # no packet is sent
-                    host = s.getsockname()[0]
-            except OSError:
-                pass
-        return f"http://{host}:{port}"
+        return local_url(self.cfg, self.http_port or int(self.cfg.get("http.port", 80)))
 
     def publish_config_url(self) -> None:
         """Tell smabo-web where the REST config API is (on connect and every 5 s)."""
@@ -124,7 +137,7 @@ class SimRobot:
 
     def sync_config_to_brain(self) -> None:
         """Publish the config (minus wifi) on /esp32/config for smabo-brain's odometry."""
-        snapshot = {k: v for k, v in self.cfg.data.items() if k != "wifi"}
+        snapshot = {k: v for k, v in self.config_json().items() if k != "wifi"}
         self.publish("/config", {"data": json.dumps(snapshot)})
 
     # ------------------------------------------------------------------ #
@@ -214,10 +227,16 @@ class SimRobot:
     # REST API (same contract as smabo-esp32/http_server.py → Robot)
     # ------------------------------------------------------------------ #
     def config_json(self) -> dict:
-        return self.cfg.data
+        """What the ESP32's REST /config holds: no simulator or phone keys
+        (the phone's settings are on its own REST /config, phone/settings.py)."""
+        return {k: v for k, v in self.cfg.data.items() if k not in SIM_ONLY_KEYS}
 
     def set_config(self, patch: dict) -> None:
-        patch = patch or {}
+        patch = dict(patch or {})
+        sim_only = [k for k in SIM_ONLY_KEYS if patch.pop(k, None) is not None]
+        if sim_only:
+            self.notice("smabo-sim: not ESP32 settings, ignored: " + ", ".join(sim_only)
+                        + " (phone settings: the phone's REST /config)")
         if "servos" in patch:
             # keep servos where they are when their spec changes (firmware persists last_angle)
             current = {n: {"last_angle": a * 180.0 / math.pi} for n, a in self.servos.state().items()}

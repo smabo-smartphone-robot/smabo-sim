@@ -29,9 +29,11 @@ APP_ADVERTISE = (
     ("/app/speech/audio",   "audio_common_msgs/msg/AudioData"),
     ("/app/webrtc/offer",   "std_msgs/msg/String"),
     ("/app/webrtc/app_ice", "std_msgs/msg/String"),
+    ("/app/phone/config",     "std_msgs/msg/String"),
+    ("/app/phone/config_url", "std_msgs/msg/String"),
 )
 APP_SUBSCRIBE = (
-    ("/expression",    "std_msgs/msg/Int32"),
+    ("/expression",    "std_msgs/msg/String"),
     ("/look_at",       "geometry_msgs/msg/PoseStamped"),
     ("/speech/say",    "std_msgs/msg/String"),
     ("/webrtc/answer", "std_msgs/msg/String"),

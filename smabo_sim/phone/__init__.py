@@ -4,7 +4,7 @@ smabo-sim's ``SimRobot`` replaces smabo-esp32; ``SimPhone`` replaces smabo-app,
 the phone in the robot's front holder. It connects to the brain as its own
 client, exactly like the app does:
 
-  * subscribes ``/expression`` (std_msgs/Int32), ``/look_at``
+  * subscribes ``/expression`` (std_msgs/String, an expression name), ``/look_at``
     (geometry_msgs/PoseStamped) and ``/speech/say`` (std_msgs/String), and
     animates the face (``face.Face``) on the phone screen in the MuJoCo world;
   * publishes ``/app/imu/data`` (sensor_msgs/Imu, frame ``imu_link``) at
@@ -87,7 +87,10 @@ class SimPhone:
         self.speaker = Speaker(cfg)
         self.utterances_sent = 0
         self.camera: CameraStreamer | None = None
-        if cfg.get("phone.camera.stream", True) and getattr(engine, "has_phone", False):
+        self.config_url = ""                  # our REST /config, announced on /app/phone/config_url
+        self.settings_json: Callable[[], dict] | None = None   # set by PhoneSettings' owner
+        self._last_said = ""
+        if getattr(engine, "has_phone", False):
             cam = CameraStreamer(lambda: self.engine.render_phone_camera(),   # engine changes with the model
                                  self.publish,
                                  fps=float(cfg.get("phone.camera.fps", 10.0)))
@@ -108,9 +111,30 @@ class SimPhone:
             self._frame({"op": "advertise", "topic": topic, "type": typ})
         for topic, typ in APP_SUBSCRIBE:
             self._frame({"op": "subscribe", "topic": topic, "type": typ})
-        if self.camera is not None:
+        if self.camera is not None and self.cfg.get("phone.camera.stream", True):
             # like the app after (re)connecting: offer the camera to the brain
             asyncio.ensure_future(self.camera.start())
+        self.publish_config_url()
+        self.publish_settings()
+
+    # ------------------------------------------------------------------ #
+    # settings (REST /config on the phone, like smabo-app)
+    # ------------------------------------------------------------------ #
+    def publish_config_url(self, _dt: float = 0.0) -> None:
+        """Tell smabo-web where the phone's REST /config is (on connect and every 5 s)."""
+        if self.config_url:
+            self.publish("/phone/config_url", {"data": self.config_url})
+
+    def publish_settings(self) -> None:
+        """The whole settings tree, after every change: open smabo-web pages refresh."""
+        if self.settings_json is not None:
+            self.publish("/phone/config", {"data": json.dumps(self.settings_json())})
+
+    def set_camera(self, on: bool) -> None:
+        """Start / stop streaming the front camera (sensors.camera.enabled)."""
+        if self.camera is None:
+            return
+        asyncio.ensure_future(self.camera.start() if on else self.camera.close())
 
     def publish(self, topic: str, msg: dict) -> None:
         """Publish as the app (``/app`` source prefix)."""
@@ -129,17 +153,26 @@ class SimPhone:
 
     def handle(self, topic: str | None, msg: dict) -> None:
         if topic == "/expression":
-            try:
-                self.face.set_expression(int(msg.get("data", 1)))
-            except (TypeError, ValueError):
-                pass
+            name = msg.get("data")
+            if isinstance(name, str) and name.strip():
+                if self.face.set_expression_by_name(name):
+                    self.publish_settings()
+                else:
+                    log.warning("unknown expression %r (ignored)", name)
         elif topic == "/look_at":
             pose = msg.get("pose", msg) or {}
             p = pose.get("position") or {}
             self.face.look_at(float(p.get("x", 1.0)), float(p.get("y", 0.0)), float(p.get("z", 0.0)))
         elif topic == "/speech/say":
             text = str(msg.get("data", ""))
-            self.face.say(text)
+            if not text.strip():
+                return
+            # app: drop a repeat of the previous text (e.g. vision saying the same QR every frame)
+            if self.cfg.get("phone.speech.ignore_repeated", True) and text == self._last_said:
+                return
+            self._last_said = text
+            if self.cfg.get("phone.speech.bubble", True):
+                self.face.say(text)
             self.speaker.speak(text)            # app: if (settings.ttsEnabled) tts.speak(text)
         elif topic == "/webrtc/answer" and self.camera is not None:
             asyncio.ensure_future(self.camera.handle_answer(msg))
@@ -175,7 +208,7 @@ class SimPhone:
         return self._axes @ acc_r, self._axes @ gyro_r
 
     def publish_imu(self, dt: float) -> None:
-        if dt <= 0 or dt > 1:
+        if dt <= 0 or dt > 1 or not self.cfg.get("phone.imu_enabled", True):
             return
         acc, gyro = self.read_imu(dt)
         r = self._rpy

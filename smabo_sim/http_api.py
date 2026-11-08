@@ -1,10 +1,16 @@
-"""REST config API — same endpoints and CORS as ``smabo-esp32/http_server.py``.
+"""The simulator's two HTTP servers.
+
+``build_app`` — the REST config API, the same endpoints and CORS as
+``smabo-esp32/http_server.py`` and nothing else, on ``http.port`` (80 like the
+ESP32; 8080 where 80 can't be opened):
 
     GET  /config           → full live config (JSON)
     POST /config  {patch}  → deep-merge a config patch
     POST /mode    {modes}  → enable/disable subsystems
 
-Simulator extras (the phone, i.e. smabo-app's part):
+``build_sim_app`` — what only the simulator has, on its own port
+(``sim.view_port``, default 8090), so the REST port looks exactly like a board.
+The phone (smabo-app's part):
 
     GET  /phone              → page showing the phone screen and front camera
     GET  /phone/screen.png   → the face currently on the phone screen
@@ -16,10 +22,11 @@ Simulator extras (the phone, i.e. smabo-app's part):
 
 The simulation itself, in a browser (no ``--viewer`` window needed; see view.py):
 
+    GET  /                   → redirects to /view
     GET  /view               → page with the 3D view (drag to orbit, wheel to zoom)
 
-smabo-web talks to this directly; point its ESP32 host field at
-``localhost:<http.port>`` (default 8080).
+smabo-web finds the REST API by itself (the simulator announces it on
+/esp32/config_url, like the board does).
 """
 
 from __future__ import annotations
@@ -36,7 +43,7 @@ from .view import add_view_routes
 
 _CORS = {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
 }
 
@@ -75,9 +82,8 @@ document.getElementById('mic').onclick=()=>speech({listen:true},'Listening… (s
 </script></body></html>"""
 
 
-def build_app(robot: SimRobot, phone=None, switch_model=None) -> web.Application:
-    """``switch_model(name)`` rebuilds the robot as another roadmap model
-    (``POST /view/model``); without it the model is fixed."""
+def _with_cors() -> web.Application:
+    """An app answering like the ESP32 does: CORS on everything, JSON errors."""
     @web.middleware
     async def cors(request: web.Request, handler):
         if request.method == "OPTIONS":
@@ -94,6 +100,11 @@ def build_app(robot: SimRobot, phone=None, switch_model=None) -> web.Application
             resp.headers.update(_CORS)
         return resp
 
+    return web.Application(middlewares=[cors])
+
+
+def build_app(robot: SimRobot) -> web.Application:
+    """The REST config API: exactly the ESP32's endpoints."""
     async def _body(request: web.Request) -> dict:
         try:
             data = await request.json()
@@ -114,10 +125,105 @@ def build_app(robot: SimRobot, phone=None, switch_model=None) -> web.Application
         robot.set_mode(await _body(request))
         return web.json_response({"ok": True})
 
-    app = web.Application(middlewares=[cors])
+    async def face_preview(request: web.Request) -> web.Response:
+        q = request.query
+        try:
+            png = face.preview(int(q["id"]), int(q.get("w", 400)), int(q.get("h", 200)))
+        except (KeyError, ValueError):
+            png = None
+        if png is None:
+            return _missing()
+        return web.Response(body=png, content_type="image/png", headers={"Cache-Control": "no-store"})
+
+    app = _with_cors()
     app.router.add_get("/config", get_config)
     app.router.add_post("/config", post_config)
     app.router.add_post("/mode", post_mode)
+    return app
+
+
+def build_phone_app(settings, face=None) -> web.Application:
+    """The phone's REST config API (smabo-app serves the same on port 8081):
+    ``GET /config`` the settings tree, ``POST /config`` a partial patch, and
+    with ``face`` (phone/expressions.py FaceRest) the ``/face/...`` expressions."""
+    async def _body(request: web.Request) -> dict:
+        try:
+            data = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            raise _bad_json()
+        if not isinstance(data, dict):
+            raise _bad_json()
+        return data
+
+    async def get_config(_request: web.Request) -> web.Response:
+        return web.json_response(settings.to_json())
+
+    async def post_config(request: web.Request) -> web.Response:
+        return web.json_response({"ok": True, "ignored": settings.apply(await _body(request))})
+
+    def _id(request: web.Request) -> int:
+        try:
+            return int(request.match_info["id"])
+        except ValueError:
+            raise web.HTTPNotFound()
+
+    def _missing() -> web.Response:
+        return web.json_response({"error": "no such expression"}, status=404)
+
+    async def face_schema(_request: web.Request) -> web.Response:
+        return web.json_response(face.schema())
+
+    async def face_list(_request: web.Request) -> web.Response:
+        return web.json_response(face.list())
+
+    async def face_patch(request: web.Request) -> web.Response:
+        ignored = face.patch(_id(request), await _body(request))
+        return _missing() if ignored is None else web.json_response({"ok": True, "ignored": ignored})
+
+    async def face_add(request: web.Request) -> web.Response:
+        body = await _body(request)
+        copy_of = body.pop("copy_of", None)
+        new_id = face.add(int(copy_of) if isinstance(copy_of, (int, float)) and not isinstance(copy_of, bool)
+                          else None, body)
+        return _missing() if new_id is None else web.json_response({"ok": True, "id": new_id})
+
+    async def face_delete(request: web.Request) -> web.Response:
+        err = face.delete(_id(request))
+        return web.json_response({"ok": True} if err is None else {"error": err}, status=200 if err is None else 400)
+
+    async def face_preview(request: web.Request) -> web.Response:
+        q = request.query
+        try:
+            png = face.preview(int(q["id"]), int(q.get("w", 400)), int(q.get("h", 200)))
+        except (KeyError, ValueError):
+            png = None
+        if png is None:
+            return _missing()
+        return web.Response(body=png, content_type="image/png", headers={"Cache-Control": "no-store"})
+
+    app = _with_cors()
+    app.router.add_get("/config", get_config)
+    app.router.add_post("/config", post_config)
+    if face is not None:
+        app.router.add_get("/face/schema", face_schema)
+        app.router.add_get("/face/expressions", face_list)
+        app.router.add_post("/face/expressions", face_add)
+        app.router.add_post("/face/expressions/{id}", face_patch)
+        app.router.add_delete("/face/expressions/{id}", face_delete)
+        app.router.add_get("/face/preview.png", face_preview)
+    return app
+
+
+def build_sim_app(robot: SimRobot, phone=None, switch_model=None) -> web.Application:
+    """The simulator-only pages: /view (3D view, models, targets) and /phone.
+
+    ``switch_model(name)`` rebuilds the robot as another roadmap model
+    (``POST /view/model``); without it the model is fixed."""
+    async def index(_request):
+        raise web.HTTPFound("/view")
+
+    app = _with_cors()
+    app.router.add_get("/", index)
     add_view_routes(app, lambda: robot.engine, robot.cfg, _CORS, switch_model)
     if phone is not None:
         _add_phone_routes(app, phone)

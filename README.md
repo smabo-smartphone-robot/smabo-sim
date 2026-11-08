@@ -29,7 +29,17 @@ docker compose run --rm smabo-ros ros2 launch smabo_bringup bringup.launch.py \
   mount:=tt_motor map:=/opt/smabo_ws/src/smabo-brain-ros/smabo_navigation/maps/sim_room.yaml
 ```
 
-smabo-web では、brain の接続先を `localhost:9090` にします。ESP32 の接続先（REST）は、シミュレータが `/esp32/config_url` で知らせるので自動で `http://localhost:8080` になります。走行・サーボのタブは brain 経由でシミュレータを動かし、設定タブ（REST）はシミュレータに直接つながります。
+smabo-web では、brain の接続先を `localhost:9090` にします。ESP32 の接続先（REST）は、シミュレータが `/esp32/config_url` で知らせるので自動で `http://localhost:80` になります。走行・サーボのタブは brain 経由でシミュレータを動かし、設定タブ（REST）はシミュレータに直接つながります。
+
+ポートは実機と同じ構成です。
+
+| ポート | 中身 | 実機 |
+|---|---|---|
+| 80（`--http-port`） | REST の設定 API（`GET/POST /config`・`POST /mode`）だけ | ESP32 と同じ |
+| 8081（`--phone-port`） | スマホの設定 REST API（`GET/POST /config`） | smabo-app と同じ |
+| 8090（`--view-port`） | シミュレータだけの画面：3D 表示 `/view`、スマホの画面とカメラ `/phone` | なし |
+
+80 番を開けないとき（Linux で root でない、ほかのプログラムが使っている）は、自動で 8080 にします。どちらの番号になっても `/esp32/config_url` で知らせるので、smabo-web の設定は要りません。
 
 ### MuJoCo（物理演算と 3D ビューアー）
 
@@ -47,7 +57,7 @@ smabo-web では、brain の接続先を `localhost:9090` にします。ESP32 �
 
 ### ブラウザで見る（ウィンドウなし）
 
-`--viewer` を付けずに MuJoCo で起動し、ブラウザで `http://localhost:8080/view` を開きます。
+`--viewer` を付けずに MuJoCo で起動し、ブラウザで `http://localhost:8090/view` を開きます（`http://localhost:8090/` でも同じ）。
 
 ```bash
 .venv/bin/python -m smabo_sim --engine mujoco      # macOS でも mjpython は不要
@@ -56,7 +66,7 @@ smabo-web では、brain の接続先を `localhost:9090` にします。ESP32 �
 - MuJoCo が画面に出さずに描いた映像を MJPEG で流します。ページを開いている間だけ描画します（複数のブラウザで開いても描画は 1 回分）。
 - ドラッグで回転、Shift＋ドラッグか右ドラッグで移動、ホイールでズームです。上段のボタンでロボットのモデルを切り替えられます（下の「ロードマップごとのモデル」）。「ロボットを追う」「真上」「視点リセット」「LiDAR点」のボタンがあります。視点はページを開いている全員で共有です。
 - 左上にロボットの実際の位置（シミュレータ内の真値）を出します。
-- 別の PC やスマホからは `http://<シミュレータのPCのIP>:8080/view` で見られます。
+- 別の PC やスマホからは `http://<シミュレータのPCのIP>:8090/view` で見られます。
 - 解像度とフレームレートは `view.width` / `view.height`（既定 960×600）、`view.fps`（既定 15）、画質は `view.jpeg_quality`（既定 80）です。
 - `kinematic` エンジンでは描くものがないので、ページにその旨を表示します。
 
@@ -114,11 +124,13 @@ smabo-sim は ESP32 だけでなく、前面ホルダーに挿したスマホ（
 
 | smabo-app | smabo-sim |
 |---|---|
-| `/expression`・`/look_at`・`/speech/say` を受けて顔を描く | 同じトピックを受けて、MuJoCo の世界のスマホ画面に顔を描く。表情はアプリの初期テンプレート 1〜8、視線の追従・まばたき・吹き出しもアプリと同じ計算 |
+| `/expression`・`/look_at`・`/speech/say` を受けて顔を描く | 同じトピックを受けて、MuJoCo の世界のスマホ画面に顔を描く。表情は名前で選ぶ（`/expression` は String、大文字小文字は区別しない）。初期はアプリのテンプレート 8 種、視線の追従・まばたき・吹き出しもアプリと同じ計算 |
 | `/app/imu/data` を 20 Hz で送る | 同じ形式・同じ相補フィルタで送る。値はスマホの位置にある MuJoCo の加速度・ジャイロセンサー（端末の座標系） |
-| カメラ映像を WebRTC で brain に送る | 同じ手順（`/app/webrtc/offer` → `/webrtc/answer`）で、MuJoCo の前面カメラの映像を送る。brain-ros の `webrtc_camera` が `/camera/image_raw` にする。`http://localhost:8080/phone` でも見られる |
+| カメラ映像を WebRTC で brain に送る | 同じ手順（`/app/webrtc/offer` → `/webrtc/answer`）で、MuJoCo の前面カメラの映像を送る。brain-ros の `webrtc_camera` が `/camera/image_raw` にする。`http://localhost:8090/phone` でも見られる |
 | `/app/gps/fix` を位置が変わるたびに送る | 同じ形式（`sensor_msgs/NavSatFix`、frame `gps`）で `phone.gps.rate`（既定 1 Hz）ごとに送る。ワールドの x を東、y を北として、`phone.gps.origin`（既定は東京駅）からの距離を緯度経度に直し、`phone.gps.accuracy`（既定 3 m）ぶんのノイズを加える。`phone.gps.enabled: false` で止まる |
 | `/speech/say` を flutter_tts で読み上げる | ホストの音声合成で読み上げる（macOS は `say`、Linux は `espeak-ng`）。言語は `phone.tts.language`（既定 `ja-JP` → Kyoko）、声と速さは `phone.tts.voice`・`phone.tts.rate`。新しい発話は今の発話を止める（アプリと同じ）。`--mute` か `phone.tts.enabled: false` で吹き出しだけになる |
+| 設定を REST（`GET/POST /config`、ポート 8081）で公開し、`/app/phone/config_url`（5 秒ごと）と `/app/phone/config`（変更のたび）で知らせる | 同じ API・同じ形（smabo-web の Config タブの Phone 欄で編集）。IMU のオン/オフと周期、カメラ送信のオン/オフ、吹き出し、同じ文の読み上げを無視、読み上げのオン/オフ、表情がその場で効く。ウェイクワード・認識言語・顔の自動非表示は値を持つだけ |
+| 表情を REST（`/face/schema`・`/face/expressions`・`/face/preview.png`）で編集できる | 同じ API・同じスキーマ（`smabo_sim/phone/expressions.py`。smabo-app の `test/face_schema.json` と一致することをテストで確認）。大きさ・回転・まぶたの傾き・ハイライトの有無も描く。プレビューは sim の描画で PNG にしたもの。編集した表情は `phone.face.expressions` に入り、`--save` で保存される |
 | ウェイクワードのあと発話を録音し、16 kHz の WAV を `/app/speech/audio` で送る（文字起こしは brain） | 同じ形式で送る。発話は 3 通り：`/phone` ページか `POST /phone/speech {"text": "..."}` で入力した文を音声合成したもの（マイク不要）、`{"listen": true}` でホストのマイクから録音したもの（アプリと同じく無音 1.5 秒で終了、`pip install -e '.[voice]'` が必要）、`audio/wav` で送った WAV。ウェイクワードの検出は再現せず、顔をタップしたときと同じ「すぐ録音」になる |
 
 - スマホの位置は CAD に合わせています。本体前面のホルダー（11 mm の溝）に横向きで挿し、画面は前向きです。
@@ -138,7 +150,8 @@ smabo-sim は ESP32 だけでなく、前面ホルダーに挿したスマホ（
 | `--config my.json` | ESP32 の `config.json` と同じ形式の設定を重ねる。実機の寸法やサーボ設定をそのまま使える |
 | `--save` | REST で変えた設定を `--config` のファイルに書き戻す（ESP32 のフラッシュ保存と同じ） |
 | `--world w.yaml` | ワールド（既定は同梱の `smabo_sim/worlds/room.yaml`） |
-| `--http-port` | REST API のポート（既定 8080。ESP32 は 80） |
+| `--http-port` | REST API のポート（既定 80、ESP32 と同じ。開けないときは 8080） |
+| `--view-port` | シミュレータだけの画面（`/view`・`/phone`）のポート（既定 8090） |
 | `--engine` | `kinematic`（既定）または `mujoco` |
 | `--model` | ロボットの構成（ロードマップの段階、既定 `full`）。上の「ロードマップごとのモデル」を参照 |
 | `--viewer` | MuJoCo の 3D ビューアーを開く（`--engine mujoco` が必要）。ブラウザで見るだけなら不要（`/view`） |
@@ -150,7 +163,7 @@ smabo-sim は ESP32 だけでなく、前面ホルダーに挿したスマホ（
 
 | 層 | ファイル | 役割 |
 |---|---|---|
-| ファームウェア | `firmware.py`, `robot.py`, `http_api.py`, `link.py` | ESP32 の処理を移植したもの。cmd_vel から左右の duty への変換（`dc.min_duty` の床上げ、0.5 秒で止まるタイムアウトを含む）、サーボの軌道追従と速度制限、`servos.behavior: "random"` のランダム動作（`random_motion.py`、`servos.random_groups` のグループごとに実機と同じ計算で動かす）、モードによる有効・無効、送信周期、REST API、再接続 |
+| ファームウェア | `firmware.py`, `robot.py`, `http_api.py`, `link.py` | ESP32 の処理を移植したもの。cmd_vel から左右の duty への変換（`dc.min_duty` の床上げ、0.5 秒で止まるタイムアウトを含む）、サーボの軌道追従と速度制限、`servos.behavior: "random"` のランダム動作（`random_motion.py`、`servos.random_groups` のグループごとに実機と同じ計算で動かす）、モードによる有効・無効、送信周期、REST API（ESP32 と同じエンドポイントだけ）、再接続。`/view`・`/phone` は別ポートの `build_sim_app` |
 | エンジン | `engines/` | 実際に起きること。車輪の動き、エンコーダ、LiDAR。差し替え可能 |
 | モデル | `models.py` | ロードマップの段階ごとの構成（どの部品があるか、ESP32 のモード、有効なサーボ）。MJCF の組み立てとエンジンがこれを見る |
 | 表示 | `view.py` | ブラウザ用の 3D 表示（`/view`）。MuJoCo の画面外描画を MJPEG で配信し、視点はドラッグで操作 |
@@ -167,7 +180,9 @@ smabo-sim は ESP32 だけでなく、前面ホルダーに挿したスマホ（
 ### ESP32 との違い（意図的なもの）
 - ヘッダーの時刻は、ホストの実時間を使います（ESP32 は起動からのミリ秒）。
 - ハードウェア設定（ピン、I2C、Wi-Fi）は保持しますが、効果はありません。変更すると notice を返します。
-- 既定の設定は、すぐ使えるように変えてあります（brain は `localhost`、エンコーダ走行と LiDAR を有効、HTTP ポートは 8080）。
+- 既定の設定は、すぐ使えるように変えてあります（brain は `localhost`、エンコーダ走行と LiDAR を有効）。HTTP ポートは ESP32 と同じ 80 ですが、開けない環境では 8080 にします。
+- シミュレータだけの画面（`/view`・`/phone`）は REST とは別のポート（8090）にあります。REST のポートには ESP32 と同じエンドポイントしかありません。
+- 80 番の `/config` には ESP32 の設定だけが入ります。シミュレータの設定（`sim.*`・`view.*`）とスマホの設定（`phone.*`）は出さず、POST されても無視して notice を返します。スマホの設定はスマホ側の REST（8081）で変えます。
 
 ## ワールドと地図
 

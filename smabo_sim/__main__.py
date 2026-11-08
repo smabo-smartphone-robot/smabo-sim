@@ -19,22 +19,30 @@ from aiohttp import web
 
 from .config import Config
 from .engines import create_engine
-from .http_api import build_app
+from . import __version__
+from .http_api import build_app, build_phone_app, build_sim_app
 from .link import BrainLink
 from .models import MODELS, RobotModel, get_model
 from .phone import SimPhone
-from .robot import SimRobot
+from .phone.expressions import FaceRest
+from .phone.settings import DEFAULT_PORT as PHONE_PORT, PhoneSettings
+from .robot import SimRobot, local_url
 from .world import World
 
 log = logging.getLogger("smabo_sim")
 
 
-async def _every(period: float, fn) -> None:
-    """Call ``fn(dt)`` at a fixed rate, passing the measured interval."""
+async def _every(period, fn) -> None:
+    """Call ``fn(dt)`` at a fixed rate, passing the measured interval.
+
+    ``period`` may be a callable, read again after every call (a rate that
+    can be changed while running, e.g. the phone's IMU rate)."""
+    get = period if callable(period) else (lambda: period)
     loop = asyncio.get_running_loop()
     last = loop.time()
-    nxt = last + period
+    nxt = last + get()
     while True:
+        period = get()
         await asyncio.sleep(max(0.0, nxt - loop.time()))
         now = loop.time()
         fn(min(now - last, 0.1))
@@ -44,7 +52,7 @@ async def _every(period: float, fn) -> None:
             nxt = now + period
 
 
-async def run(cfg: Config, world: World, viewer: bool = False) -> None:
+async def run(cfg: Config, world: World, viewer: bool = False, http_port_given: bool = False) -> None:
     engine = create_engine(cfg.get("sim.engine", "kinematic"), world, cfg)
     view = _open_viewer(engine) if viewer else None
     link: BrainLink | None = None
@@ -92,19 +100,64 @@ async def run(cfg: Config, world: World, viewer: bool = False) -> None:
 
     robot.on_brain_settings_changed = restart_links
 
-    runner = web.AppRunner(build_app(robot, phone, switch_model), access_log=None)
-    await runner.setup()
-    port = int(cfg.get("http.port", 8080))
-    await web.TCPSite(runner, "0.0.0.0", port).start()
+    # Like the board: the REST config API alone on http.port (80). The simulator's
+    # own pages (/view, /phone) get a port of their own.
+    rest = web.AppRunner(build_app(robot), access_log=None)
+    await rest.setup()
+    port = int(cfg.get("http.port", 80))
+    try:
+        await web.TCPSite(rest, "0.0.0.0", port).start()
+    except OSError as e:
+        if port != 80 or http_port_given:
+            raise SystemExit(f"smabo-sim: can't open the REST port {port}: {e}")
+        # Linux without root, or taken: the usual unprivileged stand-in
+        log.warning("port 80 unavailable (%s); REST config API on 8080 instead", e.strerror or e)
+        port = 8080
+        try:
+            await web.TCPSite(rest, "0.0.0.0", port).start()
+        except OSError as e2:
+            raise SystemExit(f"smabo-sim: can't open the REST port 80 or 8080: {e2} (use --http-port)")
+    robot.http_port = port
+    robot.publish_config_url()
+
+    # The phone's own REST /config (smabo-app serves the same on 8081)
+    if phone is not None:
+        phone_port = int(cfg.get("phone.http_port", PHONE_PORT))
+
+        def phone_changed(paths: set[str]) -> None:
+            if "sensors.camera.enabled" in paths:
+                phone.set_camera(bool(cfg.get("phone.camera.stream", True)))
+            phone.publish_settings()           # (cfg.update already saved it with --save)
+
+        settings = PhoneSettings(cfg, phone, phone_port, on_change=phone_changed, version=__version__)
+        phone.settings_json = settings.to_json
+        face_rest = FaceRest(cfg, phone.face, on_change=phone.publish_settings)
+        phone_rest = web.AppRunner(build_phone_app(settings, face_rest), access_log=None)
+        await phone_rest.setup()
+        try:
+            await web.TCPSite(phone_rest, "0.0.0.0", phone_port).start()
+        except OSError as e:
+            raise SystemExit(f"smabo-sim: can't open the phone's REST port {phone_port}: {e} (use --phone-port)")
+        phone.config_url = local_url(cfg, phone_port)
+        phone.publish_config_url()
+
+    view_port = int(cfg.get("sim.view_port", 8090))
+    sim_pages = web.AppRunner(build_sim_app(robot, phone, switch_model), access_log=None)
+    await sim_pages.setup()
+    try:
+        await web.TCPSite(sim_pages, "0.0.0.0", view_port).start()
+    except OSError as e:
+        raise SystemExit(f"smabo-sim: can't open the view port {view_port}: {e} (use --view-port)")
 
     log.info("world '%s' (%d segments), engine '%s', model '%s'", world.name, len(world.segments),
              cfg.get("sim.engine"), get_model(cfg.get("sim.model")).name)
-    log.info("REST config API on http://localhost:%d  (smabo-web: ESP32 host = localhost:%d)", port, port)
+    log.info("REST config API (as on the ESP32) on http://localhost:%d", port)
     log.info("brain: %s", url())
     if hasattr(robot.engine, "render_view"):
-        log.info("3D view in the browser: http://localhost:%d/view", port)
+        log.info("3D view in the browser: http://localhost:%d/view", view_port)
     if phone is not None:
-        log.info("phone (smabo-app part): screen + camera on http://localhost:%d/phone", port)
+        log.info("phone (smabo-app part): screen + camera on http://localhost:%d/phone", view_port)
+        log.info("phone settings REST API (as smabo-app) on http://localhost:%d/config", phone_port)
 
     def status(_dt: float) -> None:
         p = robot.engine.pose()
@@ -112,7 +165,7 @@ async def run(cfg: Config, world: World, viewer: bool = False) -> None:
         face = ""
         if phone is not None:
             fs = phone.face.state
-            face = (f" | face #{fs.expression} gaze {fs.gaze[0]:+.2f},{fs.gaze[1]:+.2f}"
+            face = (f" | face {phone.face.expression.name} gaze {fs.gaze[0]:+.2f},{fs.gaze[1]:+.2f}"
                     f"{' (look_at)' if phone.face.following else ''}"
                     f"{' says: ' + fs.bubble if fs.bubble else ''}")
             if phone.speaker.speaking:
@@ -137,7 +190,8 @@ async def run(cfg: Config, world: World, viewer: bool = False) -> None:
         jobs += [
             phone_link.run(),
             _every(1.0 / max(cfg.get("phone.screen.fps", 30.0), 1e-3), phone.update_screen),
-            _every(1.0 / max(cfg.get("phone.imu_rate", 20.0), 1e-3), phone.publish_imu),
+            _every(lambda: 1.0 / max(float(cfg.get("phone.imu_rate", 20.0)), 1e-3), phone.publish_imu),
+            _every(5.0, phone.publish_config_url),
             _every(1.0 / max(cfg.get("phone.gps.rate", 1.0), 1e-3), phone.publish_gps),
         ]
     if view is not None:
@@ -226,7 +280,9 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--world", help="world YAML (default: bundled room)")
     r.add_argument("--host", help="brain host (default: localhost)")
     r.add_argument("--port", type=int, help="brain port (default: 9090)")
-    r.add_argument("--http-port", type=int, help="REST config API port (default: 8080)")
+    r.add_argument("--http-port", type=int, help="REST config API port (default: 80 like the ESP32; 8080 if 80 can't be opened)")
+    r.add_argument("--phone-port", type=int, help="the phone's settings REST API, as smabo-app (default: 8081)")
+    r.add_argument("--view-port", type=int, help="simulator-only pages: /view, /phone (default: 8090)")
     r.add_argument("--engine", help="simulation engine: kinematic (default) or mujoco")
     r.add_argument("--model", help="robot for a roadmap step: " + " | ".join(MODELS)
                    + " (default: full; switchable at /view)")
@@ -262,6 +318,10 @@ def main(argv: list[str] | None = None) -> int:
         overrides["brain"]["port"] = args.port
     if args.http_port:
         overrides["http"]["port"] = args.http_port
+    if args.phone_port:
+        overrides["phone"]["http_port"] = args.phone_port
+    if args.view_port:
+        overrides["sim"]["view_port"] = args.view_port
     if args.engine:
         overrides["sim"]["engine"] = args.engine
     if args.world:
@@ -279,7 +339,7 @@ def main(argv: list[str] | None = None) -> int:
         cfg.update(model.config_patch(cfg.get("servos.joints") or {}))
     world = World.load(cfg.get("sim.world") or None)
     try:
-        asyncio.run(run(cfg, world, viewer=args.viewer))
+        asyncio.run(run(cfg, world, viewer=args.viewer, http_port_given=bool(args.http_port)))
     except KeyboardInterrupt:
         pass
     except ViewerError as e:

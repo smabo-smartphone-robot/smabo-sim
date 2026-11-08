@@ -7,7 +7,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from smabo_sim.config import Config
 from smabo_sim.engines import create_engine
-from smabo_sim.http_api import build_app
+from smabo_sim.http_api import build_sim_app
 from smabo_sim.phone import SimPhone, device_axes
 from smabo_sim.phone.face import EXPRESSIONS, Face, gaze_from_look_at
 from smabo_sim.robot import SimRobot
@@ -92,11 +92,14 @@ def test_phone_subscribes_like_the_app_and_handles_topics():
     assert {"op": "advertise", "topic": "/app/gps/fix", "type": "sensor_msgs/msg/NavSatFix"} in ops
     assert {o["topic"] for o in ops if o["op"] == "subscribe"} == {
         "/expression", "/look_at", "/speech/say", "/webrtc/answer"}
-    phone.on_message(json.dumps({"op": "publish", "topic": "/expression", "msg": {"data": 3}}))
+    phone.on_message(json.dumps({"op": "publish", "topic": "/expression", "msg": {"data": " angry "}}))
     phone.on_message(json.dumps({"op": "publish", "topic": "/look_at", "msg": {
         "header": {}, "pose": {"position": {"x": 1.0, "y": 0.5, "z": 0.0}}}}))
     phone.on_message(json.dumps({"op": "publish", "topic": "/speech/say", "msg": {"data": "やあ"}}))
-    assert phone.face.state.expression == 3
+    assert phone.face.expression.name == "Angry"
+    for ignored in ({"data": 3}, {"data": "nope"}, {"data": ""}):    # by name only; unknown: no change
+        phone.on_message(json.dumps({"op": "publish", "topic": "/expression", "msg": ignored}))
+        assert phone.face.expression.name == "Angry"
     assert phone.face.state.target == pytest.approx([-0.5, 0.0])
     assert phone.face.state.bubble == "やあ"
 
@@ -157,7 +160,7 @@ def test_phone_http_routes():
         phone, engine = mujoco_phone()
         phone.update_screen(0.03)
         robot = SimRobot(engine.cfg, engine, [].append)
-        async with TestClient(TestServer(build_app(robot, phone))) as c:
+        async with TestClient(TestServer(build_sim_app(robot, phone))) as c:
             r = await c.get("/phone/screen.png")
             assert r.status == 200 and (await r.read())[:4] == b"\x89PNG"
             r = await c.get("/phone/camera.jpg")
@@ -172,7 +175,7 @@ def test_camera_route_explains_kinematic_engine():
         sent = []
         phone, engine, cfg = kinematic_phone(sent)
         robot = SimRobot(cfg, engine, sent.append)
-        async with TestClient(TestServer(build_app(robot, phone))) as c:
+        async with TestClient(TestServer(build_sim_app(robot, phone))) as c:
             r = await c.get("/phone/camera.jpg")
             assert r.status == 404 and "mujoco" in (await r.json())["error"]
     asyncio.run(go())

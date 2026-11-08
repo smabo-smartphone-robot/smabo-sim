@@ -9,7 +9,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from smabo_sim.config import Config
 from smabo_sim.engines import create_engine
-from smabo_sim.http_api import build_app
+from smabo_sim.http_api import build_sim_app
 from smabo_sim.robot import SimRobot
 from smabo_sim.world import World
 
@@ -95,7 +95,7 @@ def test_view_targets_routes():
     robot = SimRobot(cfg, create_engine("kinematic", World.load(), cfg), lambda s: None)
 
     async def go():
-        async with TestClient(TestServer(build_app(robot))) as client:
+        async with TestClient(TestServer(build_sim_app(robot))) as client:
             j = await (await client.get("/view/targets")).json()
             assert [t["name"] for t in j["targets"]] == ["face", "aruco_0", "qr", "red_ball"]
             r = await client.post("/view/targets/qr", json={"x": 1.2, "sway": {"on": True}})

@@ -10,7 +10,8 @@ box against a local smabo-brain-ros:
 
   * ``brain``  → ``localhost:9090``, path ``/``.
   * ``modes``  → servos, encoder_drive and lidar on.
-  * ``http``   → port 8080 (port 80 needs root on Linux/macOS).
+  * ``http``   → port 80 like the board; where it can't be opened (Linux
+                 without root, or taken) the simulator falls back to 8080.
   * ``sim``    → simulator-only settings (engine, world, noise, rates).
 
 An ESP32 ``config.json`` can be loaded on top (``--config``) to simulate a
@@ -47,7 +48,7 @@ DEFAULTS: dict[str, Any] = {
         "port": 9090,
         "path": "",          # "" = "/" (smabo-brain and smabo-brain-ros alike)
     },
-    "http": {"port": 8080},
+    "http": {"port": 80},
     "i2c": {"sda": 21, "scl": 22, "freq": 400000},
     "pca9685": {"address": 0x40, "freq": 50},
     "modes": {
@@ -107,9 +108,14 @@ DEFAULTS: dict[str, Any] = {
         "enabled": True,                # face, IMU and camera of the phone in the holder
         "camera_side": "robot_left",    # end of the phone with the front camera (= device top)
         "screen": {"width": 512, "height": 256, "fps": 30.0},
+        # The app's own settings live on the phone's REST /config (phone/settings.py,
+        # port http_port), not on the ESP32's: these keys are what it maps to.
+        "http_port": 8081,              # the phone's REST /config (smabo-app serves the same)
+        "imu_enabled": True,
         "imu_rate": 20.0,               # Hz, smabo-app SensorService.startImu default
         # front camera; streamed to the brain over WebRTC like smabo-app (needs aiortc)
-        "camera": {"width": 640, "height": 480, "hfov_deg": 60.0, "fps": 10.0, "stream": True},
+        "camera": {"width": 640, "height": 480, "hfov_deg": 60.0, "fps": 10.0, "stream": True,
+                   "front": True},     # only the front camera is simulated
         # GPS (/gps/fix, sensor_msgs/NavSatFix) like smabo-app's geolocator stream.
         # World x = east, y = north (ROS ENU); origin is where world (0, 0) lies.
         "gps": {"enabled": True, "rate": 1.0,
@@ -119,7 +125,10 @@ DEFAULTS: dict[str, Any] = {
         # /speech/say read aloud on the host (macOS say / espeak-ng), like flutter_tts
         "tts": {"enabled": True, "language": "ja-JP", "voice": "", "rate": 0},
         # utterances to /speech/audio (typed text → speech, or the host microphone)
-        "voice": {"enabled": True, "max_seconds": 10.0, "silence_ms": 1500, "silence_rms": 600.0},
+        "voice": {"enabled": True, "max_seconds": 10.0, "silence_ms": 1500, "silence_rms": 600.0,
+                  "wake_word": "smabo", "stt_locale": "ja_JP"},   # kept for the app's settings
+        "speech": {"bubble": True, "ignore_repeated": True},      # /speech/say on the face
+        "face": {"auto_hide": True, "auto_hide_seconds": 5},      # the app's UI; no effect here
     },
     # ---- simulator only -------------------------------------------------
     "sim": {
@@ -127,6 +136,7 @@ DEFAULTS: dict[str, Any] = {
         "model": "full",                # robot per roadmap step: phone | base | hand | neck | mobile |
                                         # encmobile | arm | nav | full (smabo_sim/models.py)
         "world": "",                    # path to a world YAML ("" = bundled room)
+        "view_port": 8090,              # simulator-only pages (/view, /phone); the board has none
         "physics_rate": 100.0,          # Hz
         "motor_time_constant": 0.08,    # s, first-order lag of each wheel's speed
         "robot_radius": 0.09,           # m, footprint used for collisions

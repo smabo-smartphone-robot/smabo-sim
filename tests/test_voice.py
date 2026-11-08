@@ -11,7 +11,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from smabo_sim.config import Config
 from smabo_sim.engines import create_engine
-from smabo_sim.http_api import build_app
+from smabo_sim.http_api import build_sim_app
 from smabo_sim.phone import SimPhone, tts, voice
 from smabo_sim.robot import SimRobot
 from smabo_sim.world import World
@@ -166,7 +166,7 @@ def test_speech_endpoint(monkeypatch):
         async def fake_talk(text):
             talked.append(text)
         monkeypatch.setattr(phone, "talk", fake_talk)
-        async with TestClient(TestServer(build_app(robot, phone))) as c:
+        async with TestClient(TestServer(build_sim_app(robot, phone))) as c:
             r = await c.post("/phone/speech", json={"text": "前に進んで"})
             assert (await r.json()) == {"ok": True, "sent": True} and talked == ["前に進んで"]
             wav = voice.pcm_to_wav(np.zeros(1600, np.int16))
