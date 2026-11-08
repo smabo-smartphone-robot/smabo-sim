@@ -27,6 +27,12 @@ The simulation itself, in a browser (no ``--viewer`` window needed; see view.py)
 
 smabo-web finds the REST API by itself (the simulator announces it on
 /esp32/config_url, like the board does).
+
+Pairing (pairing.py): while the device is not paired, both REST APIs answer
+anyone, with CORS, and take an invite code as ``{"brain": {"invite": CODE}}``
+in POST /config. Once paired they answer only requests carrying the brain's
+relay key (``X-Smabo-Relay-Key``; smabo-web's settings come through the
+brain's /devices relay) and send no CORS headers.
 """
 
 from __future__ import annotations
@@ -38,6 +44,7 @@ import time
 
 from aiohttp import web
 
+from .pairing import RELAY_KEY_HEADER, Credentials
 from .robot import SimRobot
 from .view import add_view_routes
 
@@ -46,6 +53,19 @@ _CORS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
 }
+
+def _take_invite(patch: dict) -> str | None:
+    """Remove ``brain.invite`` from a config patch and return it."""
+    brain = patch.get("brain")
+    if not isinstance(brain, dict) or "invite" not in brain:
+        return None
+    brain = dict(brain)
+    code = brain.pop("invite")
+    if brain:
+        patch["brain"] = brain
+    else:
+        del patch["brain"]
+    return code if isinstance(code, str) and code.strip() else None
 
 
 class _BadJson(Exception):
@@ -82,12 +102,19 @@ document.getElementById('mic').onclick=()=>speech({listen:true},'Listening… (s
 </script></body></html>"""
 
 
-def _with_cors() -> web.Application:
-    """An app answering like the ESP32 does: CORS on everything, JSON errors."""
+def _with_cors(creds: Credentials | None = None) -> web.Application:
+    """An app answering like the ESP32 does: CORS on everything, JSON errors.
+
+    Once ``creds`` is paired: only the brain (with the relay key), no CORS.
+    """
     @web.middleware
     async def cors(request: web.Request, handler):
+        locked = creds is not None and creds.locked
+        if locked and not creds.relay_allowed(request.headers.get(RELAY_KEY_HEADER)):
+            return web.json_response({"error": "relay_key",
+                                      "message": "Paired: settings go through the brain"}, status=401)
         if request.method == "OPTIONS":
-            return web.Response(status=204, headers=_CORS)
+            return web.Response(status=204, headers={} if locked else _CORS)
         try:
             resp = await handler(request)
         except _BadJson:
@@ -96,14 +123,15 @@ def _with_cors() -> web.Application:
             resp = web.json_response({"error": "not found"}, status=404)
         except web.HTTPMethodNotAllowed:
             resp = web.json_response({"error": "not found"}, status=404)   # ESP32 answers 404 too
-        if not resp.prepared:                 # streams set their headers themselves
+        if not resp.prepared and not locked:  # streams set their headers themselves
             resp.headers.update(_CORS)
         return resp
 
     return web.Application(middlewares=[cors])
 
 
-def build_app(robot: SimRobot) -> web.Application:
+def build_app(robot: SimRobot, creds: Credentials | None = None,
+              on_invite=None) -> web.Application:
     """The REST config API: exactly the ESP32's endpoints."""
     async def _body(request: web.Request) -> dict:
         try:
@@ -115,10 +143,18 @@ def build_app(robot: SimRobot) -> web.Application:
         return data
 
     async def get_config(_request: web.Request) -> web.Response:
-        return web.json_response(robot.config_json())
+        data = robot.config_json()
+        if creds is not None:
+            data["brain"] = {**data.get("brain", {}), **creds.status()}
+        return web.json_response(data)
 
     async def post_config(request: web.Request) -> web.Response:
-        robot.set_config(await _body(request))
+        patch = await _body(request)
+        code = _take_invite(patch)
+        if code and on_invite:
+            on_invite(code)
+        if patch:
+            robot.set_config(patch)
         return web.json_response({"ok": True})
 
     async def post_mode(request: web.Request) -> web.Response:
@@ -135,14 +171,15 @@ def build_app(robot: SimRobot) -> web.Application:
             return _missing()
         return web.Response(body=png, content_type="image/png", headers={"Cache-Control": "no-store"})
 
-    app = _with_cors()
+    app = _with_cors(creds)
     app.router.add_get("/config", get_config)
     app.router.add_post("/config", post_config)
     app.router.add_post("/mode", post_mode)
     return app
 
 
-def build_phone_app(settings, face=None) -> web.Application:
+def build_phone_app(settings, face=None, creds: Credentials | None = None,
+                    on_invite=None) -> web.Application:
     """The phone's REST config API (smabo-app serves the same on port 8081):
     ``GET /config`` the settings tree, ``POST /config`` a partial patch, and
     with ``face`` (phone/expressions.py FaceRest) the ``/face/...`` expressions."""
@@ -156,10 +193,17 @@ def build_phone_app(settings, face=None) -> web.Application:
         return data
 
     async def get_config(_request: web.Request) -> web.Response:
-        return web.json_response(settings.to_json())
+        data = settings.to_json()
+        if creds is not None:
+            data["brain"] = {**data.get("brain", {}), **creds.status()}
+        return web.json_response(data)
 
     async def post_config(request: web.Request) -> web.Response:
-        return web.json_response({"ok": True, "ignored": settings.apply(await _body(request))})
+        patch = await _body(request)
+        code = _take_invite(patch)
+        if code and on_invite:
+            on_invite(code)
+        return web.json_response({"ok": True, "ignored": settings.apply(patch) if patch else []})
 
     def _id(request: web.Request) -> int:
         try:
@@ -201,7 +245,7 @@ def build_phone_app(settings, face=None) -> web.Application:
             return _missing()
         return web.Response(body=png, content_type="image/png", headers={"Cache-Control": "no-store"})
 
-    app = _with_cors()
+    app = _with_cors(creds)
     app.router.add_get("/config", get_config)
     app.router.add_post("/config", post_config)
     if face is not None:

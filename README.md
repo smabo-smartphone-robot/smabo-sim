@@ -158,12 +158,24 @@ smabo-sim は ESP32 だけでなく、前面ホルダーに挿したスマホ（
 | `--no-phone` | スマホ（顔・IMU・GPS・カメラ・音声）を再現しない |
 | `--mute` | `/speech/say` を読み上げない（吹き出しだけ） |
 | `--seed` | センサーノイズの乱数シード |
+| `--invite` / `--phone-invite` | brain とペアリングする招待コード（ESP32 の部分 / スマホの部分）。smabo-web の「Devices」で出す |
+| `--credentials-dir` | ペアリングで受け取った token の保存先（既定 `~/.smabo/sim`） |
+
+### brain とのペアリング
+
+smabo-brain はペアリングしたクライアントだけを受け付けます（`--no-auth` の brain を除く）。シミュレータの ESP32 とスマホは、実機と同じく別々にペアリングします。
+
+1. smabo-web の「Devices」で「Add ESP32」「Add phone」を押し、招待コードを出す
+2. `--invite ABCD-EFGH --phone-invite WXYZ-2345` を付けて起動する。起動中なら、それぞれの REST に `POST /config {"brain": {"invite": "ABCD-EFGH"}}` を送ってもよい（smabo-web はペアリング前の機器にはこれを直接送る）
+3. token は `~/.smabo/sim/esp32.json`・`app.json` に保存され、次からは自動でつながる
+
+ペアリング後の REST（80・8081）は、brain が付ける中継用の鍵（`X-Smabo-Relay-Key`）のない要求を 401 で断り、CORS も返しません。smabo-web の設定画面は brain の `/devices/…` を通ります。シミュレータだけの画面（8090 の `/view`・`/phone`）は今までどおりです。
 
 ## 構成
 
 | 層 | ファイル | 役割 |
 |---|---|---|
-| ファームウェア | `firmware.py`, `robot.py`, `http_api.py`, `link.py` | ESP32 の処理を移植したもの。cmd_vel から左右の duty への変換（`dc.min_duty` の床上げ、0.5 秒で止まるタイムアウトを含む）、サーボの軌道追従と速度制限、`servos.behavior: "random"` のランダム動作（`random_motion.py`、`servos.random_groups` のグループごとに実機と同じ計算で動かす）、モードによる有効・無効、送信周期、REST API（ESP32 と同じエンドポイントだけ）、再接続。`/view`・`/phone` は別ポートの `build_sim_app` |
+| ファームウェア | `firmware.py`, `robot.py`, `http_api.py`, `link.py`, `pairing.py` | ESP32 の処理を移植したもの。cmd_vel から左右の duty への変換（`dc.min_duty` の床上げ、0.5 秒で止まるタイムアウトを含む）、サーボの軌道追従と速度制限、`servos.behavior: "random"` のランダム動作（`random_motion.py`、`servos.random_groups` のグループごとに実機と同じ計算で動かす）、モードによる有効・無効、送信周期、REST API（ESP32 と同じエンドポイントだけ）、再接続。`/view`・`/phone` は別ポートの `build_sim_app` |
 | エンジン | `engines/` | 実際に起きること。車輪の動き、エンコーダ、LiDAR。差し替え可能 |
 | モデル | `models.py` | ロードマップの段階ごとの構成（どの部品があるか、ESP32 のモード、有効なサーボ）。MJCF の組み立てとエンジンがこれを見る |
 | 表示 | `view.py` | ブラウザ用の 3D 表示（`/view`）。MuJoCo の画面外描画を MJPEG で配信し、視点はドラッグで操作 |

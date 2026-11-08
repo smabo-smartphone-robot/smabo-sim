@@ -14,6 +14,7 @@ import asyncio
 import logging
 import math
 import sys
+from pathlib import Path
 
 from aiohttp import web
 
@@ -22,6 +23,7 @@ from .engines import create_engine
 from . import __version__
 from .http_api import build_app, build_phone_app, build_sim_app
 from .link import BrainLink
+from .pairing import DEFAULT_DIR as DEFAULT_CRED_DIR, Credentials
 from .models import MODELS, RobotModel, get_model
 from .phone import SimPhone
 from .phone.expressions import FaceRest
@@ -52,7 +54,8 @@ async def _every(period, fn) -> None:
             nxt = now + period
 
 
-async def run(cfg: Config, world: World, viewer: bool = False, http_port_given: bool = False) -> None:
+async def run(cfg: Config, world: World, viewer: bool = False, http_port_given: bool = False,
+              invite: str = "", phone_invite: str = "", credentials_dir: str = "") -> None:
     engine = create_engine(cfg.get("sim.engine", "kinematic"), world, cfg)
     view = _open_viewer(engine) if viewer else None
     link: BrainLink | None = None
@@ -62,20 +65,37 @@ async def run(cfg: Config, world: World, viewer: bool = False, http_port_given: 
             link.send(text)
 
     robot = SimRobot(cfg, engine, send)
+    # Pairing with the brain (pairing.py): tokens survive restarts in cred_dir
+    cred_dir = Path(credentials_dir or DEFAULT_CRED_DIR).expanduser()
+    robot_creds = Credentials("esp32", cfg.get("wifi.hostname") or "smabo-sim", cred_dir / "esp32.json")
+    if invite:
+        robot_creds.set_invite(invite)
 
     def url() -> str:
         return f"ws://{cfg.get('brain.host')}:{cfg.get('brain.port')}{robot.ws_path()}"
 
-    link = BrainLink(url, robot.on_message, robot.on_brain_connect)
+    link = BrainLink(url, robot.on_message, robot.on_brain_connect, credentials=robot_creds)
 
     # the phone (smabo-app's part) is a separate brain client, like the real app
     phone: SimPhone | None = None
     phone_link: BrainLink | None = None
+    phone_creds = Credentials("app", "smabo-sim phone", cred_dir / "app.json")
+    if phone_invite:
+        phone_creds.set_invite(phone_invite)
     if cfg.get("phone.enabled", True):
         phone = SimPhone(cfg, engine, lambda text: phone_link.send(text) if phone_link else None)
         phone_link = BrainLink(
             lambda: f"ws://{cfg.get('brain.host')}:{cfg.get('brain.port')}{phone.ws_path()}",
-            phone.on_message, phone.on_brain_connect)
+            phone.on_message, phone.on_brain_connect, credentials=phone_creds)
+
+    def invite_robot(code: str) -> None:
+        robot_creds.set_invite(code)
+        link.restart()
+
+    def invite_phone(code: str) -> None:
+        phone_creds.set_invite(code)
+        if phone_link is not None:
+            phone_link.restart()
 
     def switch_model(name: str) -> RobotModel:
         """Rebuild the robot as another roadmap model (from /view or POST /view/model)."""
@@ -102,7 +122,7 @@ async def run(cfg: Config, world: World, viewer: bool = False, http_port_given: 
 
     # Like the board: the REST config API alone on http.port (80). The simulator's
     # own pages (/view, /phone) get a port of their own.
-    rest = web.AppRunner(build_app(robot), access_log=None)
+    rest = web.AppRunner(build_app(robot, robot_creds, invite_robot), access_log=None)
     await rest.setup()
     port = int(cfg.get("http.port", 80))
     try:
@@ -132,7 +152,8 @@ async def run(cfg: Config, world: World, viewer: bool = False, http_port_given: 
         settings = PhoneSettings(cfg, phone, phone_port, on_change=phone_changed, version=__version__)
         phone.settings_json = settings.to_json
         face_rest = FaceRest(cfg, phone.face, on_change=phone.publish_settings)
-        phone_rest = web.AppRunner(build_phone_app(settings, face_rest), access_log=None)
+        phone_rest = web.AppRunner(build_phone_app(settings, face_rest, phone_creds, invite_phone),
+                                   access_log=None)
         await phone_rest.setup()
         try:
             await web.TCPSite(phone_rest, "0.0.0.0", phone_port).start()
@@ -291,6 +312,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="do not simulate the phone (e.g. a real smabo-app is connected)")
     r.add_argument("--mute", action="store_true", help="do not read /speech/say aloud (phone.tts.enabled = false)")
     r.add_argument("--seed", type=int, help="random seed for sensor noise")
+    r.add_argument("--invite", help="pair the simulated ESP32 with the brain using this invite code "
+                                    "(smabo-web → Devices → Add ESP32)")
+    r.add_argument("--phone-invite", help="pair the simulated phone with the brain using this invite code")
+    r.add_argument("--credentials-dir", help=f"where the tokens are kept (default: {DEFAULT_CRED_DIR})")
     r.add_argument("-v", "--verbose", action="store_true")
 
     e = sub.add_parser("export-map", help="write a Nav2 map (pgm + yaml) for a world")
@@ -339,7 +364,9 @@ def main(argv: list[str] | None = None) -> int:
         cfg.update(model.config_patch(cfg.get("servos.joints") or {}))
     world = World.load(cfg.get("sim.world") or None)
     try:
-        asyncio.run(run(cfg, world, viewer=args.viewer, http_port_given=bool(args.http_port)))
+        asyncio.run(run(cfg, world, viewer=args.viewer, http_port_given=bool(args.http_port),
+                        invite=args.invite or "", phone_invite=args.phone_invite or "",
+                        credentials_dir=args.credentials_dir or ""))
     except KeyboardInterrupt:
         pass
     except ViewerError as e:
