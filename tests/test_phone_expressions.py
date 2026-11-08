@@ -19,10 +19,11 @@ from smabo_sim.phone.face import Face
 from smabo_sim.phone.settings import PhoneSettings
 from smabo_sim.world import World
 
-APP_SCHEMA = pathlib.Path(__file__).resolve().parents[2] / "smabo-app" / "test" / "face_schema.json"
+# generated from smabo-protocol/face_schema.json (smabo-app serves the same schema)
+APP_SCHEMA = pathlib.Path(__file__).resolve().parent / "face_schema.json"
 
 
-@pytest.mark.skipif(not APP_SCHEMA.exists(), reason="smabo-app is not next to smabo-sim")
+@pytest.mark.skipif(not APP_SCHEMA.exists(), reason="tests/face_schema.json is missing (run smabo-protocol/gen.py)")
 def test_schema_is_smabo_apps():
     assert SCHEMA == json.loads(APP_SCHEMA.read_text(encoding="utf-8"))
 
