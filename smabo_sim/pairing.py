@@ -48,6 +48,9 @@ class Credentials:
         self.relay_key_sha256 = ""
         self.invite = ""
         self.refused = ""            # last reason the brain gave, for the logs / REST
+        # False while the brain says it does not check tokens (it runs without
+        # --pairing): then smabo-web talks to this REST directly, so it opens.
+        self.brain_checks_tokens = True
         if path is not None and path.exists():
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
@@ -86,6 +89,13 @@ class Credentials:
             return None
         ok = frame.get("ok") is True
         reason = str(frame.get("reason") or "")
+        if reason == "no_auth" or frame.get("auth") is False:
+            # The brain does not check tokens: keep ours for when it does.
+            self.brain_checks_tokens = False
+            self.invite = ""
+            self.refused = ""
+            return True
+        self.brain_checks_tokens = True
         if op == "pair":
             self.invite = ""                       # one try per code
             if ok and frame.get("token"):
@@ -118,14 +128,14 @@ class Credentials:
 
     def relay_allowed(self, key: str | None) -> bool:
         """Whether a REST request may proceed: anything while unpaired, else the brain's key only."""
-        if not self.relay_key_sha256:
+        if not self.locked:
             return True
         return bool(key) and hmac.compare_digest(_sha256(key), self.relay_key_sha256)
 
     @property
     def locked(self) -> bool:
-        """Paired with a relay key: REST only for the brain, no CORS."""
-        return bool(self.relay_key_sha256)
+        """Paired with a relay key and the brain checks tokens: REST only for the brain, no CORS."""
+        return bool(self.relay_key_sha256) and self.brain_checks_tokens
 
     def status(self) -> dict:
         """For GET /config: whether this device is paired (never the token)."""

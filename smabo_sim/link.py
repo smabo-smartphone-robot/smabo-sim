@@ -6,8 +6,8 @@ Equivalent of ``smabo-esp32/ws_client.py``: connect out to
 
 With ``credentials`` (pairing.py) the first frame is the token or an invite
 code, and ``on_connect`` runs only once the brain has accepted it. A brain
-started with ``--no-auth`` does not answer that frame; after
-``AUTH_REPLY_TIMEOUT`` the link goes on as before.
+without pairing (the default) says so at once; smabo-brain-ros does not
+answer that frame, and after ``AUTH_REPLY_TIMEOUT`` the link goes on as before.
 """
 
 from __future__ import annotations
@@ -112,7 +112,7 @@ class BrainLink:
         try:
             msg = await ws.receive(timeout=AUTH_REPLY_TIMEOUT)
         except asyncio.TimeoutError:
-            return True                      # a --no-auth brain says nothing
+            return True                      # smabo-brain-ros says nothing
         if msg.type != aiohttp.WSMsgType.TEXT:
             return False
         try:

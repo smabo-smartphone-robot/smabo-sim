@@ -149,3 +149,14 @@ def test_link_goes_on_with_a_no_auth_brain(tmp_path, monkeypatch):
         await server.close()
         assert got[:2] == ["auth", "advertise"]
     asyncio.run(go())
+
+
+def test_paired_rest_opens_while_the_brain_skips_pairing(tmp_path):
+    from smabo_sim.pairing import Credentials
+    c = Credentials("esp32", "sim", tmp_path / "esp32.json")
+    c.handle_reply({"op": "pair", "ok": True, "token": "t", "relay_key": "k", "name": "sim"})
+    assert c.locked and not c.relay_allowed(None)
+    assert c.handle_reply({"op": "auth", "ok": True, "auth": False, "reason": "no_auth"}) is True
+    assert c.token == "t" and not c.locked and c.relay_allowed(None)
+    c.handle_reply({"op": "auth", "ok": True, "role": "esp32", "name": "sim", "id": "x"})
+    assert c.locked and c.relay_allowed("k") and not c.relay_allowed(None)

@@ -29,7 +29,7 @@ docker compose run --rm smabo-ros ros2 launch smabo_bringup bringup.launch.py \
   mount:=tt_motor map:=/opt/smabo_ws/src/smabo-brain-ros/smabo_navigation/maps/sim_room.yaml
 ```
 
-smabo-web では、brain の接続先を `localhost:9090` にします。ESP32 の接続先（REST）は、シミュレータが `/esp32/config_url` で知らせるので自動で `http://localhost:80` になります。走行・サーボのタブは brain 経由でシミュレータを動かし、設定タブ（REST）はシミュレータに直接つながります。
+smabo-web では、brain の接続先を `localhost:9090` にします。ESP32 の接続先（REST）は、シミュレータが `/esp32/config_url` で知らせるので自動で `http://localhost:80` になります。走行・サーボのタブも設定タブ（REST）も、brain 経由でシミュレータにつながります（smabo-brain-ros では設定タブはシミュレータに直接つながります）。
 
 ポートは実機と同じ構成です。
 
@@ -163,7 +163,7 @@ smabo-sim は ESP32 だけでなく、前面ホルダーに挿したスマホ（
 
 ### brain とのペアリング
 
-smabo-brain はペアリングしたクライアントだけを受け付けます（`--no-auth` の brain を除く）。シミュレータの ESP32 とスマホは、実機と同じく別々にペアリングします。
+smabo-brain は既定ではペアリングなしで、シミュレータはそのままつながります。`--pairing` で起動した brain は、ペアリングしたクライアントだけを受け付けます。その場合、シミュレータの ESP32 とスマホは、実機と同じく別々にペアリングします。
 
 1. smabo-web の「Devices」で「Add ESP32」「Add phone」を押し、招待コードを出す
 2. `--invite ABCD-EFGH --phone-invite WXYZ-2345` を付けて起動する。起動中なら、それぞれの REST に `POST /config {"brain": {"invite": "ABCD-EFGH"}}` を送ってもよい（smabo-web はペアリング前の機器にはこれを直接送る）
