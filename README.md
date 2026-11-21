@@ -1,5 +1,10 @@
 # smabo-sim
 
+> **smabo（スマボ）** は、手のひらサイズのスマホロボット（スマートフォンロボット）です。手持ちのスマホが顔とセンサーになり、工具なしでブロックのように組み立てられます。
+> このリポジトリは smabo のシミュレータ（ESP32 の代わりに動く）です。使い方は [公式サイト](https://smabo-smartphone-robot.github.io/)、ほかのリポジトリは [smabo-smartphone-robot](https://github.com/smabo-smartphone-robot) を見てください。
+>
+> *smabo is a palm-sized smartphone robot: your phone becomes its face and sensors, and it snaps together without tools. This repository is the simulator that stands in for the ESP32. Guides: [smabo-smartphone-robot.github.io](https://smabo-smartphone-robot.github.io/)*
+
 smabo-esp32 をそのまま置き換えるシミュレータです。ESP32 と**同じプロトコルで、同じ相手**とやり取りするので、smabo-brain(-ros) と smabo-web は何も変えずに使えます。
 
 ```
