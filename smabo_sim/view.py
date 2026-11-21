@@ -230,8 +230,10 @@ def add_view_routes(app: web.Application, get_engine, cfg, cors: dict, switch_mo
 def _parts(m) -> list[str]:
     """What a model is built from, for the /view tooltip."""
     out = ["スマホ"] if not m.base else ["ベース", "スマホ"]
-    if m.mobile:
+    if m.mount == "tt_motor":
         out.append("TTモーター台車")
+    elif m.mount == "dg01d_e":
+        out.append("DG01D-E台車")
     if m.encoder:
         out.append("エンコーダ")
     if m.lidar:

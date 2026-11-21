@@ -168,6 +168,7 @@ class SimRobot:
             if self.drive_enabled():
                 lin = (msg.get("linear") or {}).get("x", 0.0)
                 ang = (msg.get("angular") or {}).get("z", 0.0)
+                self.drive.set_closed_loop(self.mode("encoder_drive"))
                 self.drive.set_cmd_vel(float(lin), float(ang), now)
         elif topic == "/servo/command":
             if self.mode("servos"):
@@ -190,6 +191,7 @@ class SimRobot:
             self.random_motion.tick(now, self.servos)    # servos.behavior = "random"
             self.servos.tick(now, dt)
         self.engine.set_joint_targets(self.servos.state())
+        self.drive.set_closed_loop(self.mode("encoder_drive"))
         if self.drive_enabled():
             self.engine.set_wheel_targets(*self.drive.wheel_targets(now))
         else:
@@ -204,6 +206,7 @@ class SimRobot:
         d_l, d_r = self.engine.read_wheel_distance()
         if not self.mode("encoder_drive") or dt <= 0:
             return
+        self.drive.update_speed(d_l / dt, d_r / dt, dt)     # firmware speed control
         self.publish("/wheel_vel", {"left": d_l / dt, "right": d_r / dt, "dt": dt})
 
     def publish_joint_states(self) -> None:

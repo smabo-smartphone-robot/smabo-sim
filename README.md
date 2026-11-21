@@ -21,13 +21,15 @@ python3 -m venv .venv
 .venv/bin/smabo-sim                        # ws://localhost:9090 へ接続（smabo-brain / smabo-brain-ros どちらでも可）
 ```
 
-brain-ros は、台車と LD06 があるロボット構成で起動し、シミュレータのワールドと同じ地図を渡します。
+brain-ros は、ナビゲーションモード（`mode:=nav`）で起動し、シミュレータのワールドと同じ地図を渡します。ナビゲーションモードは、台車と LD19 があるロボット構成（`mount:=dg01d_e`）に自動で切り替わります。
 
 ```bash
 cd ../smabo-brain-ros
 docker compose run --rm smabo-ros ros2 launch smabo_bringup bringup.launch.py \
-  mount:=tt_motor map:=/opt/smabo_ws/src/smabo-brain-ros/smabo_navigation/maps/sim_room.yaml
+  mode:=nav map:=/opt/smabo_ws/src/smabo-brain-ros/smabo_navigation/maps/sim_room.yaml
 ```
+
+`mode:=nav` を付けずに起動した場合は、smabo-web の「Navigation」タブで「Start Navigation」を押すと同じ状態になります。
 
 smabo-web では、brain の接続先を `localhost:9090` にします。ESP32 の接続先（REST）は、シミュレータが `/esp32/config_url` で知らせるので自動で `http://localhost:80` になります。走行・サーボのタブも設定タブ（REST）も、brain 経由でシミュレータにつながります（smabo-brain-ros では設定タブはシミュレータに直接つながります）。
 
@@ -175,7 +177,7 @@ smabo-brain は既定ではペアリングなしで、シミュレータはそ�
 
 | 層 | ファイル | 役割 |
 |---|---|---|
-| ファームウェア | `firmware.py`, `robot.py`, `http_api.py`, `link.py`, `pairing.py` | ESP32 の処理を移植したもの。cmd_vel から左右の duty への変換（`dc.min_duty` の床上げ、0.5 秒で止まるタイムアウトを含む）、サーボの軌道追従と速度制限、`servos.behavior: "random"` のランダム動作（`random_motion.py`、`servos.random_groups` のグループごとに実機と同じ計算で動かす）、モードによる有効・無効、送信周期、REST API（ESP32 と同じエンドポイントだけ）、再接続。`/view`・`/phone` は別ポートの `build_sim_app` |
+| ファームウェア | `firmware.py`, `robot.py`, `http_api.py`, `link.py`, `pairing.py` | ESP32 の処理を移植したもの。cmd_vel から左右の duty への変換（`dc_drive` の開ループは `dc.min_duty` の床上げ、`encoder_drive` はエンコーダで測った車輪速度による PI 速度制御。0.5 秒で止まるタイムアウトを含む）、サーボの軌道追従と速度制限、`servos.behavior: "random"` のランダム動作（`random_motion.py`、`servos.random_groups` のグループごとに実機と同じ計算で動かす）、モードによる有効・無効、送信周期、REST API（ESP32 と同じエンドポイントだけ）、再接続。`/view`・`/phone` は別ポートの `build_sim_app` |
 | エンジン | `engines/` | 実際に起きること。車輪の動き、エンコーダ、LiDAR。差し替え可能 |
 | モデル | `models.py` | ロードマップの段階ごとの構成（どの部品があるか、ESP32 のモード、有効なサーボ）。MJCF の組み立てとエンジンがこれを見る |
 | 表示 | `view.py` | ブラウザ用の 3D 表示（`/view`）。MuJoCo の画面外描画を MJPEG で配信し、視点はドラッグで操作 |

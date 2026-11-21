@@ -4,8 +4,9 @@ These mirror the real board's behaviour (including its quirks) so the brain
 sees the same thing it would see on hardware:
 
   * ``DriveFirmware``  ← dc_motors.DiffDrive: Twist → per-wheel duty by
-    differential kinematics, the ``dc.min_duty`` static-friction floor and the
-    cmd_vel dead-man timeout.
+    differential kinematics and the cmd_vel dead-man timeout. Open loop
+    (``dc_drive``) applies the ``dc.min_duty`` static-friction floor; in
+    ``encoder_drive`` a PI loop on the measured wheel speeds sets the duty.
   * ``ServoFirmware``  ← servo_controller.JointGroup: time-scheduled trajectory
     points, joint-limit clamping, the per-joint ``max_speed`` follower and the
     single-joint ``set_angle_deg`` (with the per-move speed override that
@@ -23,7 +24,9 @@ def _clamp(v: float, lo: float, hi: float) -> float:
     return lo if v < lo else hi if v > hi else v
 
 
-_COAST = 0.001  # |duty| at or below this coasts the motor (dc_motors._COAST)
+_COAST = 0.001      # |duty| at or below this coasts the motor (dc_motors._COAST)
+_HOLD_DUTY = 0.01   # smallest speed-control output (dc_motors._HOLD_DUTY)
+_STOP_SPEED = 1e-4  # m/s; a wheel target below this means "stop" (dc_motors._STOP_SPEED)
 
 
 def _with_min_duty(duty: float, min_duty: float) -> float:
@@ -40,6 +43,20 @@ class DriveFirmware:
         self.cfg = cfg
         self._duty = (0.0, 0.0)
         self._last_cmd = -math.inf
+        # encoder_drive speed control (dc_motors.DiffDrive.update_speed)
+        self.closed_loop = False
+        self._target = (0.0, 0.0)
+        self._integ = [0.0, 0.0]
+        self._learned = [0.0, 0.0]
+
+    def set_closed_loop(self, on: bool) -> None:
+        """``DiffDrive.set_closed_loop``: speed control on while encoders run."""
+        if bool(on) != self.closed_loop:
+            self.closed_loop = bool(on)
+            self._target, self._integ = (0.0, 0.0), [0.0, 0.0]
+
+    def _speed_control(self) -> bool:
+        return self.closed_loop and self.cfg.get("dc.speed_control", True)
 
     def full_duty_speed(self) -> float:
         """Wheel surface speed (m/s) at duty 1.0.
@@ -60,16 +77,64 @@ class DriveFirmware:
         v_l = linear_x - angular_z * sep / 2.0
         v_r = linear_x + angular_z * sep / 2.0
         norm = self.full_duty_speed()
+        if self._speed_control():
+            self._set_target(v_l, v_r)
+            return
         self._duty = (_with_min_duty(_clamp(v_l / norm, -1.0, 1.0), min_duty),
                       _with_min_duty(_clamp(v_r / norm, -1.0, 1.0), min_duty))
 
+    def _set_target(self, v_l: float, v_r: float) -> None:
+        """``DiffDrive._set_target``: new wheel speed targets (m/s)."""
+        old, self._target = self._target, (v_l, v_r)
+        ff = 1.0 / self.full_duty_speed()
+        duty = list(self._duty)
+        for i, v in enumerate((v_l, v_r)):
+            if abs(v) < _STOP_SPEED:
+                self._remember(i)
+                duty[i] = 0.0
+            elif old[i] * v <= 0:            # from rest, or reversing
+                self._remember(i)
+                self._integ[i] = self._learned[i] if v > 0 else -self._learned[i]
+                duty[i] = _clamp(v * ff + self._integ[i], -1.0, 1.0)
+        self._duty = (duty[0], duty[1])
+
+    def _remember(self, i: int) -> None:
+        if self._integ[i] != 0.0:
+            self._learned[i] = abs(self._integ[i])
+        self._integ[i] = 0.0
+
+    def update_speed(self, meas_l: float, meas_r: float, dt: float) -> None:
+        """``DiffDrive.update_speed``: PI step from the measured wheel speeds (m/s)."""
+        if not self._speed_control() or dt <= 0:
+            return
+        kp = self.cfg.get("dc.speed_kp", 2.0)
+        ki = self.cfg.get("dc.speed_ki", 15.0)
+        i_max = self.cfg.get("dc.speed_i_max", 0.6)
+        ff = 1.0 / self.full_duty_speed()
+        duty = list(self._duty)
+        for i, (v, m) in enumerate(zip(self._target, (meas_l, meas_r))):
+            if abs(v) < _STOP_SPEED:
+                continue
+            err = v - m
+            lo, hi = (-v * ff, i_max) if v > 0 else (-i_max, -v * ff)
+            self._integ[i] = _clamp(self._integ[i] + ki * err * dt, lo, hi)
+            d = v * ff + kp * err + self._integ[i]
+            sign = 1.0 if v > 0 else -1.0
+            if d * sign < _HOLD_DUTY:           # never against the target, never 0
+                d = _HOLD_DUTY * sign
+            duty[i] = _clamp(d, -1.0, 1.0)
+        self._duty = (duty[0], duty[1])
+
     def stop(self) -> None:
         self._duty = (0.0, 0.0)
+        self._target = (0.0, 0.0)
+        self._remember(0)
+        self._remember(1)
 
     def duty(self, now: float) -> tuple[float, float]:
         """Current (left, right) duty in [-1, 1], zero after ``cmd_timeout``."""
         if now - self._last_cmd > self.cfg.get("dc.cmd_timeout", 0.5):
-            self._duty = (0.0, 0.0)
+            self.stop()
         return self._duty
 
     def wheel_targets(self, now: float) -> tuple[float, float]:

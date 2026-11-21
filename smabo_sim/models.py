@@ -4,7 +4,7 @@ The roadmap (smabo-smartphone-robot.github.io) builds smabo up step by step:
 the phone alone, the base, then a module per guide. Each preset here is the
 robot as it stands at that step, in smabo_description's terms (xacro args
 ``arm`` / ``hand`` / ``breadboard`` / ``mount``) plus what the ESP32 has wired
-(encoders, LD06):
+(encoders, lidar):
 
   name       roadmap step                           robot
   phone      (before the base)                      the phone alone, on a stand
@@ -14,8 +14,11 @@ robot as it stands at that step, in smabo_description's terms (xacro args
   mobile     移動ロボット                            TT-motor chassis, no encoders (dc_drive)
   encmobile  エンコーダ付                            chassis + encoders (encoder_drive)
   arm        ロボットアーム / 動作計画               base + 3-DOF arm and gripper
-  nav        ナビゲーション                          chassis + encoders + LD06 lidar
-  full       (everything)                           chassis + encoders + lidar + arm
+  nav        ナビゲーション                          DG01D-E chassis + encoders + LD19 lidar
+  full       (everything)                           DG01D-E chassis + encoders + LD19 + arm
+
+The lidar (LD19) comes with the DG01D-E chassis (``mount:=dg01d_e``), whose
+mount carries it on top of the base.
 
 Picking a model sets ``sim.model`` and the ESP32 ``modes`` that model has
 hardware for, and enables only its servos — what you would configure on the
@@ -37,16 +40,16 @@ class RobotModel:
     label: str                  # shown in /view (Japanese, like the roadmap)
     roadmap: tuple[str, ...]    # roadmap node ids (docs/js/roadmap.js)
     base: bool = True           # False: the phone alone
-    mount: str = "none"         # none | tt_motor | neck  (smabo_description mount:=)
+    mount: str = "none"         # none | tt_motor | dg01d_e | neck  (smabo_description mount:=)
     arm: bool = False
     hand: bool = False
     breadboard: bool = False
     encoder: bool = False       # wheel encoders wired (encoder_drive, /wheel_vel → odom)
-    lidar: bool = False         # LD06 on top
+    lidar: bool = False         # LD19 on top (comes with mount dg01d_e)
 
     @property
     def mobile(self) -> bool:
-        return self.mount == "tt_motor"
+        return self.mount in ("tt_motor", "dg01d_e")
 
     def servos(self) -> tuple[str, ...]:
         return ((ARM_SERVOS if self.arm else ()) + (HAND_SERVOS if self.hand else ())
@@ -82,9 +85,9 @@ MODELS: dict[str, RobotModel] = {m.name: m for m in (
     RobotModel("encmobile", "エンコーダ付", ("encmobile",), mount="tt_motor", breadboard=True,
                encoder=True),
     RobotModel("arm", "ロボットアーム", ("arm", "plan"), arm=True),
-    RobotModel("nav", "ナビゲーション", ("nav", "brainros"), mount="tt_motor", breadboard=True,
+    RobotModel("nav", "ナビゲーション", ("nav", "brainros"), mount="dg01d_e", breadboard=True,
                encoder=True, lidar=True),
-    RobotModel("full", "全部入り", (), mount="tt_motor", arm=True, encoder=True, lidar=True),
+    RobotModel("full", "全部入り", (), mount="dg01d_e", arm=True, encoder=True, lidar=True),
 )}
 
 DEFAULT_MODEL = "full"

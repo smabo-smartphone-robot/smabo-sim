@@ -3,16 +3,16 @@
 The robot mirrors smabo_description (smabo-brain-ros) for the configuration
 picked by ``sim.model`` (``smabo_sim.models``: one per roadmap step): the same
 link frames, joint names, axes and limits, so joint angles mean exactly what
-they mean in the URDF / MoveIt. The full tree (``full``, i.e. ``mount:=tt_motor
+they mean in the URDF / MoveIt. The full tree (``full``, i.e. ``mount:=dg01d_e
 arm:=true`` plus the other modules where a model has them):
 
   [pan_stand_link (fixed on the floor) ─ pan_link ← head_pan (z)]   mount:=neck
-  base_link (bottom centre of the base box; free joint only with tt_motor,
+  base_link (bottom centre of the base box; free joint only on a chassis,
              otherwise fixed on the floor or on pan_link)
-    ├─ chassis (TT motor chassis, ball caster)                      mount:=tt_motor
+    ├─ chassis (TT / DG01D-E motor chassis, ball caster)    mount:=tt_motor|dg01d_e
     │    ├─ left_wheel_link   ← left_wheel_joint  (hinge y, velocity motor)
     │    └─ right_wheel_link  ← right_wheel_joint
-    ├─ laser site (z 0.115, URDF laser_joint)                       lidar
+    ├─ lidar_mount_link + laser site (z 0.1333, URDF laser_joint)   mount:=dg01d_e
     ├─ arm_base_link                                                arm:=true
     │    └─ arm_link_1 ← arm_joint_1 (z) ─ arm_link_2 ← arm_joint_2 (y)
     │         ─ arm_link_3 ← arm_joint_3 (y) ─ arm_link_4 ← arm_joint_4 (x, gripper)
@@ -48,13 +48,19 @@ from ..models import get_model
 from ..world import World
 
 # ---- geometry from smabo_description (metres, base_link frame) ------------
-GROUND_Z = -0.04985                       # floor below base_link (tt_motor xacro)
-WHEEL_JOINT = (-0.0215, 0.065, -0.01985)  # left wheel; right mirrors y
+# per chassis (xacro mount): floor below base_link, left wheel joint (right
+# mirrors y), caster sphere (x, y, z, radius) and the chassis collision box
+CHASSIS = {
+    "tt_motor": dict(ground_z=-0.04985, wheel_joint=(-0.0215, 0.065, -0.01985),
+                     caster=(0.041, 0.0, -0.0408, 0.009),
+                     box=((-0.05, 0.05), (-0.0584, 0.0584), (-0.035, 0.003))),
+    "dg01d_e": dict(ground_z=-0.049, wheel_joint=(-0.021, 0.064, -0.019),
+                    caster=(0.041, 0.0, -0.040, 0.009),
+                    box=((-0.05, 0.05), (-0.0574, 0.0574), (-0.0325, 0.003))),
+}
 WHEEL_HALF_WIDTH = 0.013
-CASTER = (0.041, 0.0, -0.0408, 0.009)     # x, y, z, radius (from the chassis mesh)
 BASE_BOX = ((-0.05, 0.067), (-0.078, 0.078), (0.0, 0.10))
-CHASSIS_BOX = ((-0.05, 0.05), (-0.0584, 0.0584), (-0.035, 0.003))
-LASER_Z = 0.115
+LASER_Z = 0.1333                          # LD19 scan plane (smabo_dg01d_e.xacro laser_joint)
 ARM_MOUNT = (0.010, 0.0, 0.090)
 ARM_JOINTS = (
     # name, parent link, child link, origin xyz, origin rpy, axis
@@ -91,8 +97,9 @@ COLORS = {"base": WHITE, "part": WHITE, "mount": WHITE, "accent": WHITE,
           "dark": "0.15 0.15 0.18 1"}
 ARM_COLOR = {"arm_base_link": "mount", "arm_link_1": "part", "arm_link_2": "part",
              "arm_link_3": "part", "arm_link_4": "accent"}
-MESH_MODULE = {"base_link": "smabo_base", "chassis_link": "smabo_tt_motor",
-               "left_wheel_link": "smabo_tt_motor", "right_wheel_link": "smabo_tt_motor",
+CHASSIS_LINKS = ("chassis_link", "left_wheel_link", "right_wheel_link")
+MESH_MODULE = {"base_link": "smabo_base", "lidar_mount_link": "smabo_dg01d_e",
+               "laser": "smabo_dg01d_e",
                **{n: "smabo_arm" for n in ARM_COLOR},
                "hand_mount_link": "smabo_hand", "left_hand_link": "smabo_hand",
                "right_hand_link": "smabo_hand", "pan_stand_link": "smabo_neck",
@@ -275,8 +282,13 @@ class _Robot:
             return f'<geom class="visual" mesh="{link}" rgba="{COLORS[color]}"/>'
         return fallback
 
+    @property
+    def geo(self) -> dict:
+        """Chassis geometry of this model's mount."""
+        return CHASSIS[self.model.mount]
+
     def wheel(self, side: str, sign: int) -> str:
-        x, y, z = WHEEL_JOINT
+        x, y, z = self.geo["wheel_joint"]
         r = self.cfg.get("dc.wheel_radius", 0.030)
         return f"""
         <body name="{side}_wheel_link" pos="{_v(x, sign * y, z)}">
@@ -337,8 +349,8 @@ class _Robot:
                 + "</body>")
 
     def chassis(self) -> str:
-        cpos, csize = _box(CHASSIS_BOX)
-        cx, cy, cz, cr = CASTER
+        cpos, csize = _box(self.geo["box"])
+        cx, cy, cz, cr = self.geo["caster"]
         return f"""
       <body name="chassis_link">
         <geom class="{self.col}" type="box" pos="{cpos}" size="{csize}" mass="{MASS['chassis']}" rgba="{COLORS['mount']}"/>
@@ -357,7 +369,12 @@ class _Robot:
             f'<geom class="{self.col}" type="box" pos="{bpos}" size="{bsize}" mass="{MASS["base_link"]}" rgba="{COLORS["base"]}"/>',
             self.visual("base_link", "base"),
         ]
+        if m.mount == "dg01d_e":
+            parts.append(f'<body name="lidar_mount_link">{self.visual("lidar_mount_link", "mount")}</body>')
         if m.lidar:
+            body = (f'<body name="laser" pos="{_v(lx, ly, LASER_Z)}">'
+                    f'{self.visual("laser", "dark")}</body>') if m.mount == "dg01d_e" else ""
+            parts.append(body)
             parts.append(f'<site name="laser" pos="{_v(lx, ly, LASER_Z)}" size="0.012" rgba="{WHITE}"/>')
         if m.mobile:
             parts.append(self.chassis())
@@ -376,7 +393,7 @@ class _Robot:
             return self.phone_alone(x, y, yaw)
         if m.mobile:
             # on its wheels: free to drive, fall and be pushed
-            z0 = -GROUND_Z + 0.002
+            z0 = -self.geo["ground_z"] + 0.002
             return f"""
     <body name="base_link" pos="{_v(x, y, z0)}" euler="0 0 {yaw:.6g}">
       <freejoint name="root"/>
@@ -456,7 +473,9 @@ class _Robot:
         if m.base:
             links.append("base_link")
         if m.mobile:
-            links += ["chassis_link", "left_wheel_link", "right_wheel_link"]
+            links += list(CHASSIS_LINKS)
+        if m.mount == "dg01d_e":
+            links += ["lidar_mount_link", "laser"]
         if m.arm:
             links += list(ARM_COLOR)
         if m.hand:
@@ -481,7 +500,8 @@ class _Robot:
         if not self.meshes:
             return "\n    ".join(out)
         for link in self.mesh_links():
-            module = MESH_MODULE[link]
+            module = (f"smabo_{self.model.mount}" if link in CHASSIS_LINKS
+                      else MESH_MODULE[link])
             out.append(f'<mesh name="{link}" file="{module}/visual/{link}.stl"/>')
             if link in ARM_COLOR:
                 out.append(f'<mesh name="{link}_col" file="{module}/collision/{link}.stl"/>')
