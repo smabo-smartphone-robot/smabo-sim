@@ -83,3 +83,55 @@ def test_unknown_joints_are_ignored():
     s.load_trajectory(["zzz"], [{"positions": [1.0]}], now=0.0)
     s.tick(now=0.0, dt=0.02)
     assert s.state() == {"a": 0.0, "b": 0.0}
+
+
+# --------------------------------------------------------------------------- #
+# encoder_drive wheel speed control (dc_motors.DiffDrive.update_speed)
+# --------------------------------------------------------------------------- #
+
+def closed_loop(**dc):
+    d = DriveFirmware(Config(overrides={"dc": {"min_duty": 0.7, **dc}}))
+    d.set_closed_loop(True)
+    return d
+
+
+def test_speed_control_ignores_the_open_loop_min_duty():
+    d = closed_loop()
+    d.set_cmd_vel(0.0, 0.6, now=0.0)
+    _, right = d.wheel_targets(now=0.0)
+    assert right == pytest.approx(0.6 * 0.13 / 2)       # feed-forward = commanded speed
+
+
+def test_speed_control_raises_the_duty_of_a_slow_wheel():
+    d = closed_loop()
+    d.set_cmd_vel(0.1, 0.0, now=0.0)
+    before = d.duty(now=0.0)[0]
+    d.update_speed(0.0, 0.1, 0.05)                        # left stalled
+    assert d.duty(now=0.05)[0] > before
+    assert d.duty(now=0.05)[1] == pytest.approx(before)    # right on target
+
+
+def test_speed_control_off_is_open_loop():
+    d = closed_loop(speed_control=False)
+    d.set_cmd_vel(0.0, 0.6, now=0.0)
+    assert d.duty(now=0.0)[1] == pytest.approx(0.7)
+
+
+def test_speed_control_tracks_a_weaker_motor():
+    """Motor that only reaches 60 % of the nominal speed: the integrator makes it up."""
+    d = closed_loop()
+    target = 0.1
+    v = 0.0
+    for k in range(100):                                   # 5 s at 20 Hz
+        d.set_cmd_vel(target, 0.0, now=k * 0.05)
+        v = 0.6 * d.wheel_targets(now=k * 0.05)[0]
+        d.update_speed(v, v, 0.05)
+    assert v == pytest.approx(target, rel=0.05)
+
+
+def test_speed_control_keeps_the_feed_forward_on_target():
+    d = closed_loop()
+    d.set_cmd_vel(0.0, 0.6, now=0.0)
+    v = 0.6 * 0.13 / 2
+    d.update_speed(-v, v, 0.05)
+    assert d.wheel_targets(now=0.05) == pytest.approx((-v, v))

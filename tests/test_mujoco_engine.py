@@ -32,7 +32,7 @@ def test_robot_stands_still_on_its_wheels():
     run(e, 0.0, 0.0, 1.0)
     p = e.pose()
     assert abs(p.x) < 1e-3 and abs(p.y) < 1e-3 and abs(p.yaw) < 1e-3
-    assert e.data.xpos[e._base][2] == pytest.approx(0.0498, abs=1e-3)   # wheels on the floor
+    assert e.data.xpos[e._base][2] == pytest.approx(0.049, abs=1e-3)    # wheels on the floor (dg01d_e)
 
 
 def test_straight_drive_matches_encoders():

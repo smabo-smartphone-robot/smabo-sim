@@ -177,3 +177,13 @@ def test_hello_on_connect_and_warning_on_brain_protocol_mismatch():
     publish(robot, "/brain/info", {"data": json.dumps({"protocol": 2, "brain": "smabo-brain"})})
     notes = [f for f in out if f["op"] == "notice"]
     assert len(notes) == 1 and "protocol mismatch" in notes[0]["message"]   # warned once
+
+
+def test_encoder_drive_spins_at_the_commanded_rate_despite_min_duty():
+    robot, _, clock = make({"dc": {"min_duty": 0.7}})
+    yaw0 = robot.engine.pose().yaw
+    for _ in range(40):                                    # 2 s, cmd_vel and encoders at 20 Hz
+        publish(robot, "/cmd_vel", {"linear": {"x": 0.0}, "angular": {"z": 0.6}})
+        run(robot, clock, 0.05)
+        robot.publish_wheel_vel()
+    assert robot.engine.pose().yaw - yaw0 == pytest.approx(1.2, rel=0.05)

@@ -50,7 +50,7 @@ DEFAULTS: dict[str, Any] = {
         "path": "",          # "" = "/" (smabo-brain and smabo-brain-ros alike)
     },
     "http": {"port": 80},
-    "i2c": {"sda": 21, "scl": 22, "freq": 400000},
+    "i2c": {"sda": 18, "scl": 5, "freq": 400000},
     "pca9685": {"address": 0x40, "freq": 50},
     "modes": {
         "servos": True,
@@ -81,13 +81,20 @@ DEFAULTS: dict[str, Any] = {
         "wheel_radius": 0.030,
         "wheel_separation": 0.130,
         "min_duty": 0.0,
+        "start_duty": 0.0,         # board only (kick-start); not modelled
+        "kick_ms": 150,
+        "speed_control": True,     # encoder_drive: PI wheel speed control (smabo-esp32)
+        "speed_kp": 2.0,
+        "speed_ki": 15.0,
+        "speed_i_max": 0.6,
+        "brake": True,             # board only (short-brake on stop); not modelled
         "invert_left": False,
         "invert_right": False,
         "cmd_timeout": 0.5,
     },
     "encoder": {
-        "left": {"a": 34, "b": 35},
-        "right": {"a": 36, "b": 39},
+        "left": {"a": 19, "b": 21},
+        "right": {"a": 22, "b": 23},
         "cpr": 1440,
         "publish_rate": 20.0,
         "odom_frame": "odom",
@@ -96,7 +103,7 @@ DEFAULTS: dict[str, Any] = {
                        "twist_vv": 0.001, "twist_ww": 0.001},
     },
     "lidar": {
-        "uart": 1, "rx": 20, "tx": -1, "baud": 230400,
+        "uart": 2, "rx": 4, "tx": 0, "baud": 230400,
         "frame_id": "laser",
         "bins": 360,
         "range_min": 0.05,
